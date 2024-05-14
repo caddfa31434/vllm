@@ -95,6 +95,9 @@ class MultiStepOutputProcessor(SequenceGroupOutputProcessor):
                              sampling_params: SamplingParams) -> None:
         output_token_ids = [sample.output_token for sample in valid_samples]
         output_logprobs = [sample.logprobs for sample in valid_samples]
+        output_extra_tensor_datas = [
+            sample.extra_tensor_data for sample in valid_samples
+        ]
 
         # Truncate to max_tokens if necessary.
         remaining_tokens = sampling_params.max_tokens - (seq.get_output_len() +
@@ -119,11 +122,13 @@ class MultiStepOutputProcessor(SequenceGroupOutputProcessor):
 
         # Incrementally append tokens to the sequence, as if we had only one new
         # token.
-        for output_token_id, output_logprob in zip(output_token_ids,
-                                                   output_logprobs):
+        for output_token_id, output_logprob, output_extra_tensor_data in zip(
+                output_token_ids, output_logprobs, output_extra_tensor_datas):
             seq.append_token_id(
                 token_id=output_token_id,
                 logprobs=output_logprob,
+                extra_tensor_data=output_extra_tensor_data,
+                update_num_steps=False,
             )
 
             new_char_count = 0
@@ -137,6 +142,8 @@ class MultiStepOutputProcessor(SequenceGroupOutputProcessor):
                 sampling_params=sampling_params)
             if seq.is_finished():
                 break
+
+        seq.num_steps += 1
 
         if seq.is_finished():
             self.scheduler.free_seq(seq)

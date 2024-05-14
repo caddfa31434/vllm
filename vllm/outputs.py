@@ -30,6 +30,7 @@ class CompletionOutput:
         text: str,
         token_ids: List[int],
         cumulative_logprob: float,
+        num_steps: int,
         logprobs: Optional[SampleLogprobs],
         finish_reason: Optional[str] = None,
         stop_reason: Union[int, str, None] = None,
@@ -39,6 +40,7 @@ class CompletionOutput:
         self.text = text
         self.token_ids = token_ids
         self.cumulative_logprob = cumulative_logprob
+        self.num_steps = num_steps
         self.logprobs = logprobs
         self.finish_reason = finish_reason
         self.stop_reason = stop_reason
@@ -52,6 +54,7 @@ class CompletionOutput:
                 f"text={self.text!r}, "
                 f"token_ids={self.token_ids}, "
                 f"cumulative_logprob={self.cumulative_logprob}, "
+                f"num_steps={self.num_steps}, "
                 f"logprobs={self.logprobs}, "
                 f"finish_reason={self.finish_reason}, "
                 f"stop_reason={self.stop_reason})")
@@ -139,7 +142,7 @@ class RequestOutput:
             CompletionOutput(seqs.index(seq),
                              seq.get_output_text_to_return(text_buffer_length),
                              seq.get_output_token_ids(),
-                             seq.get_cumulative_logprob(),
+                             seq.get_cumulative_logprob(), seq.num_steps,
                              seq.output_logprobs if include_logprobs else None,
                              SequenceStatus.get_finished_reason(seq.status),
                              seq.stop_reason) for seq in top_n_seqs

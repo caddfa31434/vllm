@@ -3,16 +3,15 @@ import copy
 import enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Union
 
+import torch
 from vllm.block import LogicalTokenBlock
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 
 if TYPE_CHECKING:
-    import torch
-
     from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
 
 
@@ -30,11 +29,94 @@ class Logprob:
     decoded_token: Optional[str] = None
 
 
+class ExtraTensorData:
+
+    def __init__(self, **kwargs) -> None:
+        self._data: Dict[str, "torch.Tensor"] = kwargs
+
+    def __getitem__(self, key: str) -> "torch.Tensor":
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: "torch.Tensor"):
+        self._data[key] = value
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def asdict(self) -> Dict[str, torch.Tensor]:
+        return self._data
+
+    def items(self):
+        return self._data.items()
+
+    def clear(self):
+        self._data.clear()
+
+    def index(self, *idx: int) -> "ExtraTensorData":
+        return ExtraTensorData(**{k: v[idx] for k, v in self._data.items()})
+
+    def index_select(self,
+                     dim=int,
+                     index=Union["torch.IntTensor",
+                                 "torch.LongTensor"]) -> "ExtraTensorData":
+        return ExtraTensorData(**{
+            k: v.index_select(dim=dim, index=index)
+            for k, v in self._data.items()
+        })
+
+    def split(self, split_sizes=List[int]) -> Tuple["ExtraTensorData", ...]:
+        chunked = tuple(ExtraTensorData() for _ in split_sizes)
+        for k, v in self.items():
+            if v is None:
+                chunked_v = [None] * len(split_sizes)
+            else:
+                chunked_v = v.split(split_sizes)
+
+            for c, cv in zip(chunked, chunked_v):
+                c[k] = cv
+
+        return chunked
+
+    @classmethod
+    def create_empty_like(
+            cls, ref: "ExtraTensorData", size: Tuple[int, ...],
+            device: Union[str, torch.device]) -> "ExtraTensorData":
+        return ExtraTensorData(
+            **{
+                k: torch.zeros(
+                    (*size, v.shape[-1]), device=device, dtype=v.dtype)
+                for k, v in ref.items()
+            })
+
+    @staticmethod
+    def stack(
+        data: List[Optional["ExtraTensorData"]],
+        dim: int = 0,
+    ) -> Optional["ExtraTensorData"]:
+        to_stack: Dict[str, torch.Tensor] = {}
+        for d in data:
+            if d is None: return None
+
+            for k, v in d.items():
+                to_stack[k] = to_stack.get(k, [])
+                to_stack[k].append(v)
+
+        return ExtraTensorData(
+            **{k: torch.stack(v, dim=dim)
+               for k, v in to_stack.items()})
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(" + ", ".join(
+            [f"{k}={v.size()}" for k, v in self._data.items()])
+
+
 # {token_id -> logprob} per each sequence group. None if the corresponding
 # sequence group doesn't require prompt logprob.
 PromptLogprobs = List[Optional[Dict[int, Logprob]]]
 # {token_id -> logprob} for each sequence group.
 SampleLogprobs = List[Dict[int, Logprob]]
+# {sequence -> extra_tensor_data} for each sequence group.
+SampleExtraOutputData = List[Optional[ExtraTensorData]]
 
 
 class SequenceStatus(enum.Enum):
@@ -116,20 +198,24 @@ class SequenceData:
         self,
         prompt_token_ids: List[int],
         output_token_ids: Optional[List[int]] = None,
+        extra_tensor_data: Optional[ExtraTensorData] = None,
     ) -> None:
         if output_token_ids is None:
             output_token_ids = []
 
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids = output_token_ids
+        self.extra_tensor_data = extra_tensor_data
         self.cumulative_logprob = 0.0
         # The number of tokens that are computed (that run against the model).
         self._num_computed_tokens = 0
         self._stage: SequenceStage = SequenceStage.PREFILL
 
-    def append_token_id(self, token_id: int, logprob: float) -> None:
+    def append_token_id(self, token_id: int, logprob: float,
+                        extra_tensor_data: Optional[ExtraTensorData]) -> None:
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
+        self.extra_tensor_data = extra_tensor_data
 
     def get_len(self) -> int:
         return len(self.output_token_ids) + len(self.prompt_token_ids)
@@ -190,7 +276,8 @@ class SequenceData:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
                 f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob})")
+                f"cumulative_logprob={self.cumulative_logprob}, "
+                f"extra_tensor_data={self.extra_tensor_data})")
 
 
 class Sequence:
@@ -235,6 +322,7 @@ class Sequence:
         self.read_offset = 0
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
+        self.num_steps: int = 0
 
     @property
     def lora_int_id(self) -> int:
@@ -290,11 +378,16 @@ class Sequence:
         self,
         token_id: int,
         logprobs: Dict[int, Logprob],
+        extra_tensor_data: Optional[ExtraTensorData] = None,
+        update_num_steps: bool = True,
     ) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
-        self.data.append_token_id(token_id, logprobs[token_id].logprob)
+        self.data.append_token_id(token_id, logprobs[token_id].logprob,
+                                  extra_tensor_data)
+        if update_num_steps:
+            self.num_steps += 1
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -509,7 +602,8 @@ class SequenceGroup:
         status: Optional[SequenceStatus] = None,
     ) -> List[Sequence]:
         return list(self.seqs_dict.values()) if status is None else [
-            seq for seq in self.seqs_dict.values() if seq.status == status
+            seq for seq in self.seqs_dict.values()
+            if seq.status.value == status.value
         ]
 
     def get_unfinished_seqs(self) -> List[Sequence]:
@@ -663,15 +757,18 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, Logprob],
+        extra_tensor_data: Optional[ExtraTensorData] = None,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        self.extra_tensor_data = extra_tensor_data
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
                 f"output_token={self.output_token}, "
-                f"logprobs={self.logprobs})")
+                f"logprobs={self.logprobs}, "
+                f"extra_tensor_data={self.extra_tensor_data})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceOutput):
@@ -753,6 +850,9 @@ class SamplerOutput:
     # On-device tensor containing the logprobs of each token.
     logprobs: Optional["torch.Tensor"] = None
 
+    # On-device tensors containing extra output data.
+    extra_tensor_data: Optional[ExtraTensorData] = None
+
     # On-device tensor containing the sampled token ids.
     sampled_token_ids: Optional["torch.Tensor"] = None
 
@@ -783,7 +883,8 @@ class SamplerOutput:
             f"SamplerOutput(outputs={self.outputs}, "
             f"sampled_token_probs={sampled_token_probs_repr}, "
             f"sampled_token_ids={sampled_token_ids_repr}, "
-            f"spec_decode_worker_metrics={self.spec_decode_worker_metrics})")
+            f"spec_decode_worker_metrics={self.spec_decode_worker_metrics}, "
+            f"extra_tensor_data={self.extra_tensor_data})")
 
 
 @dataclass
@@ -822,6 +923,12 @@ class ExecuteModelRequest:
     num_lookahead_slots: int = 0
     # The number of requests in the running queue.
     running_queue_size: int = 0
+    # Extra outputs to return from the model
+    extra_outputs: Set[str] = field(default_factory=set)
+    # Extra inputs to pass to model
+    extra_inputs: Optional[ExtraTensorData] = None
+    # Don't speculate if true
+    dont_speculate: bool = False
 
     def clone(
         self, seq_group_metadata_list: List[SequenceGroupMetadata]
@@ -834,4 +941,6 @@ class ExecuteModelRequest:
             blocks_to_copy=self.blocks_to_copy.copy(),
             num_lookahead_slots=self.num_lookahead_slots,
             running_queue_size=self.running_queue_size,
+            extra_outputs=self.extra_outputs,
+            dont_speculate=self.dont_speculate,
         )

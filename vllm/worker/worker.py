@@ -15,7 +15,8 @@ from vllm.distributed import (broadcast_tensor_dict,
                               set_custom_all_reduce)
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
-from vllm.sequence import ExecuteModelRequest, PoolerOutput, SamplerOutput
+from vllm.sequence import (ExecuteModelRequest, ExtraTensorData, PoolerOutput,
+                           SamplerOutput)
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.embedding_model_runner import EmbeddingModelRunner
 from vllm.worker.model_runner import ModelRunner
@@ -212,7 +213,7 @@ class Worker(WorkerBase):
     def execute_model(
         self,
         execute_model_req: Optional[ExecuteModelRequest] = None
-    ) -> List[Union[SamplerOutput, PoolerOutput]]:
+    ) -> List[Union[Tuple[SamplerOutput, ExtraTensorData], PoolerOutput]]:
 
         if execute_model_req is None:
             seq_group_metadata_list = None
@@ -262,8 +263,11 @@ class Worker(WorkerBase):
         if num_seq_groups == 0:
             return []
 
-        output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache)
+        output = self.model_runner.execute_model(
+            seq_group_metadata_list,
+            self.gpu_cache,
+            extra_inputs=execute_model_req.extra_inputs,
+            extra_outputs=execute_model_req.extra_outputs)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
@@ -285,6 +289,10 @@ class Worker(WorkerBase):
     @property
     def vocab_size(self) -> int:
         return self.model_runner.vocab_size
+
+    @property
+    def extra_inputs(self) -> Set[str]:
+        return set(self.model_config.extra_inputs.keys())
 
     def get_cache_block_size_bytes(self) -> int:
         """Get the size of the KV cache block size in bytes.

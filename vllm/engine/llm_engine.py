@@ -243,6 +243,8 @@ class LLMEngine:
                 ),
             ))
 
+        self.dont_speculate = False
+
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
 
@@ -673,7 +675,7 @@ class LLMEngine:
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
                 num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
                 running_queue_size=scheduler_outputs.running_queue_size,
-            )
+                dont_speculate=self.dont_speculate)
             output = self.model_executor.execute_model(
                 execute_model_req=execute_model_req)
         else:

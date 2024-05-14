@@ -1,10 +1,10 @@
 from itertools import chain, count
-from typing import Iterator, List, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import torch
 
-from vllm.sequence import (ExecuteModelRequest, SamplerOutput, SequenceData,
-                           SequenceGroupMetadata)
+from vllm.sequence import (ExecuteModelRequest, ExtraTensorData, SamplerOutput,
+                           SequenceData, SequenceGroupMetadata)
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.util import (get_all_seq_ids, nvtx_range,
@@ -43,7 +43,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         self,
         execute_model_req: ExecuteModelRequest,
         proposals: SpeculativeProposals,
-    ) -> SpeculativeScores:
+    ) -> Tuple[SpeculativeScores, Optional[ExtraTensorData]]:
         """Score the proposed tokens via the scorer model.
 
         This converts each input sequence to a set of k+1 target sequences. The
@@ -82,9 +82,9 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             execute_model_req=execute_model_req.clone(
                 seq_group_metadata_list=target_seq_group_metadata_list, ))
         assert len(target_sampler_output) == 1, "expected single-step output"
-        target_sampler_output = target_sampler_output[0]
+        target_sampler_output, _ = target_sampler_output[0]
 
-        all_tokens, all_probs, spec_logprobs = self._contract_batch(
+        all_tokens, all_probs, spec_logprobs, all_extra_output_data = self._contract_batch(
             contracted_bs=len(execute_model_req.seq_group_metadata_list),
             target_sampler_output=target_sampler_output,
             proposals=proposals,
@@ -98,7 +98,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             probs=all_probs,
             token_ids=all_tokens,
             logprobs=spec_logprobs,
-        )
+        ), all_extra_output_data
 
     def _expand_batch(
         self,
@@ -140,11 +140,11 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                 num_scoring_tokens)
 
     def _contract_batch(
-            self, contracted_bs: int,
-            target_sampler_output: List[SamplerOutput],
-            proposals: SpeculativeProposals, num_scoring_tokens: int,
-            non_spec_indices: List[int], spec_indices: List[int],
-            k: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, contracted_bs: int, target_sampler_output: List[SamplerOutput],
+        proposals: SpeculativeProposals, num_scoring_tokens: int,
+        non_spec_indices: List[int], spec_indices: List[int], k: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+               Optional[ExtraTensorData]]:
         """Contract the expanded batch back into its original size.
         This maps the scores of speculative tokens back to their original
         sequences.
@@ -153,8 +153,9 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         target_sampler_output will be contracted to.
         """
         (target_token_ids, target_probs, target_logprobs,
-         non_spec_target_token_ids, non_spec_target_probs,
-         non_spec_target_logprobs) = self._split_scoring_output(
+         target_extra_output_data, non_spec_target_token_ids,
+         non_spec_target_probs, non_spec_target_logprobs,
+         non_spec_target_extra_output_data) = self._split_scoring_output(
              target_sampler_output, num_scoring_tokens)
 
         # Map distinct sequences used to score each token
@@ -192,17 +193,39 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                                   device=self._device,
                                   dtype=torch.float32)
 
+        all_extra_output_data = None
+        if target_extra_output_data is not None:
+            for key in target_extra_output_data:
+                target_extra_output_data[key] = target_extra_output_data[
+                    key].squeeze().reshape(spec_expanded_bs, k + 1, -1)
+
+            all_extra_output_data = ExtraTensorData.create_empty_like(
+                target_extra_output_data,
+                size=(contracted_bs, k + 1),
+                device=self._device)
+
         if non_spec_indices:
             all_tokens[non_spec_indices, :1] = non_spec_target_token_ids
             all_probs[non_spec_indices, :1, :] = non_spec_target_probs
             all_logprobs[non_spec_indices, :1, :] = non_spec_target_logprobs
+
+            if all_extra_output_data:
+                for k in all_extra_output_data:
+                    all_extra_output_data[k][
+                        non_spec_indices, :
+                        1, :] = non_spec_target_extra_output_data[k]
 
         if spec_indices:
             all_tokens[spec_indices] = target_token_ids
             all_probs[spec_indices] = target_probs
             all_logprobs[spec_indices] = target_logprobs
 
-        return all_tokens, all_probs, all_logprobs
+            if all_extra_output_data:
+                for k in all_extra_output_data:
+                    all_extra_output_data[k][
+                        spec_indices] = target_extra_output_data[k]
+
+        return all_tokens, all_probs, all_logprobs, all_extra_output_data
 
     def _create_scoring_model_input(
         self,
@@ -312,8 +335,9 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
 
     def _split_scoring_output(
         self, sampler_output: SamplerOutput, num_scoring_tokens: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-               torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+               Optional[ExtraTensorData], torch.Tensor, torch.Tensor,
+               torch.Tensor, Optional[ExtraTensorData]]:
         """Split the target model output into speculative and non-speculative
         output.
         """
@@ -338,24 +362,35 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             non_spec_logprobs,
         ) = sampler_output.logprobs.split(split_sizes)
 
+        if sampler_output.extra_tensor_data is None:
+            spec_extra_output_data, no_spec_extra_output_data = (None, None)
+        else:
+            spec_extra_output_data, no_spec_extra_output_data = sampler_output.extra_tensor_data.split(
+                split_sizes)
+
         # Convert scores to tensors.
         sampler_output.sampled_token_probs = spec_probs
         sampler_output.sampled_token_ids = spec_sampled_tokens
         sampler_output.logprobs = spec_logprobs
-        (target_token_ids, target_probs,
-         target_logprobs) = sampler_output_to_torch([sampler_output], True)
+        sampler_output.extra_tensor_data = spec_extra_output_data
+        (target_token_ids, target_probs, target_logprobs,
+         target_extra_output_data) = sampler_output_to_torch([sampler_output],
+                                                             True)
 
         # Convert non-speculative output tokens to tensors.
         sampler_output.sampled_token_probs = non_spec_probs
         sampler_output.sampled_token_ids = non_spec_sampled_tokens
         sampler_output.logprobs = non_spec_logprobs
+        sampler_output.extra_tensor_data = no_spec_extra_output_data
         (non_spec_target_token_ids, non_spec_target_probs,
-         non_spec_target_logprobs) = sampler_output_to_torch([sampler_output],
-                                                             True)
+         non_spec_target_logprobs,
+         non_spec_target_extra_output_data) = sampler_output_to_torch(
+             [sampler_output], True)
 
         return (target_token_ids, target_probs, target_logprobs,
-                non_spec_target_token_ids, non_spec_target_probs,
-                non_spec_target_logprobs)
+                target_extra_output_data, non_spec_target_token_ids,
+                non_spec_target_probs, non_spec_target_logprobs,
+                non_spec_target_extra_output_data)
 
     def _create_target_seq_id_iterator(
             self, seq_ids: List[SeqId]) -> Iterator[TargetSeqId]:

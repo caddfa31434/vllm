@@ -81,6 +81,7 @@ class EngineArgs:
     guided_decoding_backend: str = 'outlines'
     # Speculative decoding configuration.
     speculative_model: Optional[str] = None
+    extra_inputs_for_draft_model: str = ""
     num_speculative_tokens: Optional[int] = None
     speculative_max_model_len: Optional[int] = None
     speculative_disable_by_batch_size: Optional[int] = None
@@ -90,6 +91,9 @@ class EngineArgs:
     def __post_init__(self):
         if self.tokenizer is None:
             self.tokenizer = self.model
+
+        if self.num_speculative_tokens is not None:
+            self.num_speculative_tokens = int(self.num_speculative_tokens)
 
     @staticmethod
     def add_cli_args(
@@ -454,6 +458,14 @@ class EngineArgs:
             'The name of the draft model to be used in speculative decoding.')
 
         parser.add_argument(
+            '--extra-inputs-for-draft-model',
+            type=nullable_str,
+            default=EngineArgs.extra_inputs_for_draft_model,
+            help=
+            'Extra model inputs used by draft model. These should come as outputs from the target model.'
+        )
+
+        parser.add_argument(
             '--num-speculative-tokens',
             type=int,
             default=EngineArgs.num_speculative_tokens,
@@ -549,11 +561,17 @@ class EngineArgs:
                 self.tokenizer_pool_extra_config,
             ), self.ray_workers_use_nsight)
 
+        try:
+            extra_inputs = set(self.extra_inputs_for_draft_model.split(","))
+        except:
+            extra_inputs = set()
+
         speculative_config = SpeculativeConfig.maybe_create_spec_config(
             target_model_config=model_config,
             target_parallel_config=parallel_config,
             target_dtype=self.dtype,
             speculative_model=self.speculative_model,
+            extra_inputs=extra_inputs,
             num_speculative_tokens=self.num_speculative_tokens,
             speculative_disable_by_batch_size=self.
             speculative_disable_by_batch_size,

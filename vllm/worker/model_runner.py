@@ -1,3 +1,4 @@
+import inspect
 import time
 from enum import IntEnum
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
@@ -20,8 +21,8 @@ from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.model_loader import get_model
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (MultiModalData, SamplerOutput, SequenceData,
-                           SequenceGroupMetadata)
+from vllm.sequence import (ExtraTensorData, MultiModalData, SamplerOutput,
+                           SequenceData, SequenceGroupMetadata)
 from vllm.utils import (CudaMemoryProfiler, get_kv_cache_torch_dtype, is_hip,
                         is_pin_memory_available, make_tensor_with_pad)
 
@@ -73,6 +74,7 @@ class PrepareDecodeMetadata(NamedTuple):
     lora_prompt_mapping: List[int]
     lora_requests: Set[LoRARequest]
     slot_mapping: List[int]
+    extra_inputs: Optional[List[ExtraTensorData]]
 
     @classmethod
     def empty(cls):
@@ -84,6 +86,7 @@ class PrepareDecodeMetadata(NamedTuple):
             lora_prompt_mapping=[],
             lora_requests=set(),
             slot_mapping=[],
+            extra_inputs=None,
         )
 
 
@@ -170,6 +173,9 @@ class ModelRunner:
                 scheduler_config=self.scheduler_config,
                 cache_config=self.cache_config,
             )
+
+        self.model_inputs = set(
+            inspect.signature(self.model.forward).parameters)
 
         self.model_memory_usage = m.consumed_memory
         logger.info("Loading model weights took %.4f GB",
@@ -460,6 +466,8 @@ class ModelRunner:
         # paged_kv_last_page_len is the length of the last page of each request
         paged_kv_last_page_len: List[int] = []
 
+        extra_inputs: Optional[List[ExtraTensorData]] = []
+
         if len(seq_group_metadata_list) == 0:
             return PrepareDecodeMetadata.empty()
 
@@ -507,6 +515,12 @@ class ModelRunner:
                     last_page_len = self.block_size
                 paged_kv_last_page_len.append(last_page_len)
 
+                if seq_data.extra_tensor_data is None:
+                    extra_inputs = None
+
+                if extra_inputs is not None:
+                    extra_inputs.append(seq_data.extra_tensor_data)
+
         # vLLM uses cuda graph only for decoding requests.
         # See `capture_model` API for more details.
         # For decoding requests, batch_size == input_tokens.
@@ -525,6 +539,9 @@ class ModelRunner:
                 seq_lens.append(1)
                 block_tables.append([])
                 lora_index_mapping.append(0)
+                if extra_inputs is not None:
+                    extra_inputs.append(
+                        ExtraTensorData.create_empty_like(extra_inputs[-1]))
             batch_size = graph_batch_size
 
         seq_lens_tensor = torch.tensor(seq_lens,
@@ -609,6 +626,7 @@ class ModelRunner:
             lora_prompt_mapping=lora_prompt_mapping,
             lora_requests=lora_requests,
             slot_mapping=slot_mapping,
+            extra_inputs=extra_inputs,
         )
 
     def prepare_input_tensors(
@@ -646,6 +664,7 @@ class ModelRunner:
                 decode_lora_prompt_mapping,
                 decode_lora_requests,
                 decode_slot_mapping,
+                extra_inputs,
             ) = self._prepare_decode(decode_reqs)
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
@@ -666,6 +685,9 @@ class ModelRunner:
             lora_index_mapping.extend(decode_lora_index_mapping)
             lora_prompt_mapping.extend(decode_lora_prompt_mapping)
             lora_requests.update(decode_lora_requests)
+
+            if extra_inputs is not None:
+                extra_inputs = ExtraTensorData.stack(extra_inputs)
 
             input_tokens = torch.tensor(input_tokens,
                                         dtype=torch.long,
@@ -715,6 +737,10 @@ class ModelRunner:
             else:
                 assert decode_attn_metadata is not None
                 metadata_dict.update(decode_attn_metadata.asdict_zerocopy())
+
+            if extra_inputs:
+                metadata_dict.update(extra_inputs.asdict())
+
             broadcast_tensor_dict(metadata_dict, src=0)
 
             # Broadcast decode attn metadata for mixed batch type.
@@ -738,6 +764,13 @@ class ModelRunner:
             num_prefill_tokens = metadata_dict.pop("num_prefill_tokens")
             num_decode_tokens = metadata_dict.pop("num_decode_tokens")
             batch_type = metadata_dict.pop("batch_type")
+
+            extra_inputs = ExtraTensorData(**{
+                k: metadata_dict.pop(k)
+                for k in self.model_config.extra_inputs
+            })
+            if not extra_inputs:
+                extra_inputs = None
 
             # Create an attention metadata.
             prefill_attn_metadata = None
@@ -773,17 +806,24 @@ class ModelRunner:
 
         return (input_tokens, input_positions, attn_metadata,
                 sampling_metadata, lora_requests, lora_mapping,
-                multi_modal_input)
+                multi_modal_input, extra_inputs)
 
     @torch.inference_mode()
     def execute_model(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
-    ) -> Optional[SamplerOutput]:
+        extra_inputs: ExtraTensorData = ExtraTensorData(),
+        extra_outputs: Set[str] = set(),
+    ) -> Tuple[Optional[SamplerOutput], ExtraTensorData]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
-         lora_requests, lora_mapping, multi_modal_input
+         lora_requests, lora_mapping, multi_modal_input, prepared_extra_inputs
          ) = self.prepare_input_tensors(seq_group_metadata_list)
+
+        assert extra_inputs is None or prepared_extra_inputs is None
+
+        if extra_inputs is None:
+            extra_inputs = prepared_extra_inputs
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
@@ -804,7 +844,21 @@ class ModelRunner:
         }
         if self.vision_language_config:
             execute_model_kwargs.update({"image_input": multi_modal_input})
+
+        if extra_inputs:
+            execute_model_kwargs.update(extra_inputs.asdict())
+
+        execute_model_kwargs = {
+            k: v
+            for k, v in execute_model_kwargs.items() if k in self.model_inputs
+        }
+
+        extra_tensor_data = ExtraTensorData()
+
         hidden_states = model_executable(**execute_model_kwargs)
+
+        if "hidden_states" in extra_outputs:
+            extra_tensor_data["hidden_states"] = hidden_states
 
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
@@ -819,7 +873,24 @@ class ModelRunner:
             sampling_metadata=sampling_metadata,
         )
 
-        return output
+        sampled_extra_tensor_data = extra_tensor_data.index_select(
+            0, sampling_metadata.selected_token_indices)
+
+        if extra_outputs:
+            if prefill_meta is not None:
+                for k in extra_tensor_data:
+                    extra_tensor_data[k] = extra_tensor_data[k].roll(shifts=1,
+                                                                     dims=0)
+                    extra_tensor_data[k].masked_fill_(
+                        (input_positions == 0).unsqueeze(-1), 0)
+
+                _move_extra_tensor_data_to_seq_outputs(
+                    output, sampled_extra_tensor_data, sampling_metadata)
+            else:
+                extra_tensor_data.clear()
+                output.extra_tensor_data = sampled_extra_tensor_data
+
+        return output, extra_tensor_data
 
     @torch.inference_mode()
     def profile_run(self) -> None:
@@ -950,6 +1021,14 @@ class ModelRunner:
         seq_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
         block_tables = torch.from_numpy(self.graph_block_tables).cuda()
 
+        extra_inputs = {
+            k: torch.randn(
+                max_batch_size,
+                *shape,
+                dtype=kv_caches[0].dtype if dtype is None else dtype).cuda()
+            for k, (shape, dtype) in self.model_config.extra_inputs.items()
+        }
+
         graph_batch_size = _get_graph_batch_size(
             self.scheduler_config.max_num_seqs)
         batch_size_capture_list = [
@@ -990,13 +1069,24 @@ class ModelRunner:
                     self.set_active_loras(set(), lora_mapping)
 
                 graph_runner = CUDAGraphRunner(self.model)
-                graph_runner.capture(
-                    input_tokens[:batch_size],
-                    input_positions[:batch_size],
-                    kv_caches,
-                    attn_metadata,
-                    memory_pool=self.graph_memory_pool,
-                )
+
+                model_inputs = {
+                    "input_ids": input_tokens[:batch_size],
+                    "positions": input_positions[:batch_size],
+                    "kv_caches": kv_caches,
+                    "attn_metadata": attn_metadata,
+                }
+
+                model_inputs.update(
+                    {k: v[:batch_size]
+                     for k, v in extra_inputs.items()})
+                model_inputs = {
+                    k: v
+                    for k, v in model_inputs.items() if k in self.model_inputs
+                }
+
+                graph_runner.capture(model_inputs,
+                                     memory_pool=self.graph_memory_pool)
                 self.graph_memory_pool = graph_runner.graph.pool()
                 self.graph_runners[batch_size] = graph_runner
 
@@ -1036,10 +1126,7 @@ class CUDAGraphRunner:
 
     def capture(
         self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
+        model_inputs,
         memory_pool,
         **kwargs,
     ) -> None:
@@ -1049,10 +1136,7 @@ class CUDAGraphRunner:
         # kernel launches for initial benchmarking (e.g., Triton autotune).
         with graph_mode():
             self.model(
-                input_ids,
-                positions,
-                kv_caches,
-                attn_metadata,
+                **model_inputs,
                 **kwargs,
             )
         torch.cuda.synchronize()
@@ -1064,46 +1148,50 @@ class CUDAGraphRunner:
         with torch.cuda.graph(self._graph, pool=memory_pool):  # noqa: SIM117
             with graph_mode():
                 hidden_states = self.model(
-                    input_ids,
-                    positions,
-                    kv_caches,
-                    attn_metadata,
+                    **model_inputs,
                     **kwargs,
                 )
         torch.cuda.synchronize()
 
         # Save the input and output buffers.
-        self.input_buffers = {
-            "input_ids": input_ids,
-            "positions": positions,
-            "kv_caches": kv_caches,
-            "slot_mapping": attn_metadata.slot_mapping,
-            "seq_lens_tensor": attn_metadata.decode_metadata.seq_lens_tensor,
-            "block_tables": attn_metadata.decode_metadata.block_tables,
-        }
+        self.input_buffers = {}
+
+        if "attn_metadata" in model_inputs:
+            attn_metadata: AttentionMetadata = model_inputs.pop(
+                "attn_metadata")
+            self.input_buffers.update({
+                "slot_mapping":
+                attn_metadata.slot_mapping,
+                "seq_lens_tensor":
+                attn_metadata.decode_metadata.seq_lens_tensor,
+                "block_tables":
+                attn_metadata.decode_metadata.block_tables,
+            })
+
+        self.input_buffers.update(model_inputs)
         self.output_buffers = {"hidden_states": hidden_states}
         return
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
-        **kwargs,
-    ) -> torch.Tensor:
+    def forward(self, **model_inputs) -> torch.Tensor:
         # KV caches are fixed tensors, so we don't need to copy them.
-        del kv_caches
+        if "kv_caches" in model_inputs:
+            del model_inputs["kv_caches"]
 
         # Copy the input tensors to the input buffers.
-        self.input_buffers["input_ids"].copy_(input_ids, non_blocking=True)
-        self.input_buffers["positions"].copy_(positions, non_blocking=True)
-        self.input_buffers["slot_mapping"].copy_(attn_metadata.slot_mapping,
-                                                 non_blocking=True)
-        self.input_buffers["seq_lens_tensor"].copy_(
-            attn_metadata.decode_metadata.seq_lens_tensor, non_blocking=True)
-        self.input_buffers["block_tables"].copy_(
-            attn_metadata.decode_metadata.block_tables, non_blocking=True)
+        if "attn_metadata" in model_inputs:
+            attn_metadata: AttentionMetadata = model_inputs.pop(
+                "attn_metadata")
+            self.input_buffers["slot_mapping"].copy_(
+                attn_metadata.slot_mapping, non_blocking=True)
+            self.input_buffers["seq_lens_tensor"].copy_(
+                attn_metadata.decode_metadata.seq_lens_tensor,
+                non_blocking=True)
+            self.input_buffers["block_tables"].copy_(
+                attn_metadata.decode_metadata.block_tables, non_blocking=True)
+
+        for k, v in model_inputs.items():
+            self.input_buffers[k].copy_(v, non_blocking=True)
+
         # Run the graph.
         self.graph.replay()
 
@@ -1157,3 +1245,15 @@ def _is_block_tables_empty(block_tables: Union[None, Dict]):
             value is None for value in block_tables.values()):
         return True
     return False
+
+
+def _move_extra_tensor_data_to_seq_outputs(
+        sampler_output: SamplerOutput,
+        sampled_extra_tensor_data: ExtraTensorData,
+        sampling_metadata: SamplingMetadata):
+
+    for seq_group_id, seq_group_outputs in enumerate(sampler_output.outputs):
+        for seq_id, seq_output in enumerate(seq_group_outputs.samples):
+            seq_output.extra_tensor_data = sampled_extra_tensor_data.index(
+                sampling_metadata.seq_groups[seq_group_id].
+                sample_indices[seq_id])

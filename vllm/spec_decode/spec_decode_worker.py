@@ -5,13 +5,14 @@ import torch
 
 from vllm.logger import init_logger
 from vllm.model_executor.layers.rejection_sampler import RejectionSampler
-from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
+from vllm.sequence import (ExecuteModelRequest, ExtraTensorData, SamplerOutput,
                            SequenceGroupMetadata)
 from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.metrics import AsyncMetricsCollector
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
+from vllm.spec_decode.multi_head_worker import MultiHeadWorker
 from vllm.spec_decode.ngram_worker import NGramWorker
 from vllm.spec_decode.util import (create_sequence_group_output,
                                    get_all_num_logprobs, get_all_seq_ids,
@@ -69,6 +70,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             proposer_worker = NGramWorker(**draft_worker_kwargs)
             proposer_worker.set_ngram_window_size(ngram_prompt_lookup_min,
                                                   ngram_prompt_lookup_max)
+        elif draft_worker_kwargs[
+                "model_config"].hf_config.model_type == "medusa":
+            disable_bonus_tokens = False
+            proposer_worker = MultiHeadWorker(**draft_worker_kwargs)
         else:
             proposer_worker = MultiStepWorker(**draft_worker_kwargs)
 
@@ -208,9 +213,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         # When the batch size is too large, disable speculative decoding
         # to stop trading off throughput for latency.
-        disable_all = (execute_model_req.running_queue_size >=
-                       self.disable_by_batch_size)
+        disable_all = execute_model_req.dont_speculate or (
+            execute_model_req.running_queue_size >= self.disable_by_batch_size)
         if disable_all:
+            execute_model_req.num_lookahead_slots = 0
             for seq_group_metadata in execute_model_req.seq_group_metadata_list:
                 # Once num_speculative_tokens is set to 0, the spec decode
                 # of this request will be disabled forever.
@@ -238,12 +244,18 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         not called, meaning that the kv-cache in proposer for requests is not
         updated, so they cannot enable spec decode in the rest decoding.
         """
+        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs.copy(
+        )
+        model_outputs = self.scorer_worker.execute_model(execute_model_req)
+        assert len(model_outputs) == 1
+
+        sampler_output, prefill_extra_tensor_data = model_outputs[0]
+
+        execute_model_req.extra_outputs.clear()
+        execute_model_req.extra_inputs = prefill_extra_tensor_data
+
         if not skip_proposer:
             self.proposer_worker.execute_model(execute_model_req)
-
-        sampler_output = self.scorer_worker.execute_model(execute_model_req)
-        assert len(sampler_output) == 1
-        sampler_output = sampler_output[0]
 
         # Clear device tensors from sampler output. This reduces communication
         # overhead when the engine runs in a different process than the workers.
@@ -268,7 +280,9 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Generate proposals using draft worker.
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
 
-        proposal_scores = self.scorer.score_proposals(
+        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs.copy(
+        )
+        proposal_scores, extra_tensor_data = self.scorer.score_proposals(
             execute_model_req,
             proposals,
         )
@@ -281,7 +295,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
             target_logprobs=target_logprobs,
-            k=execute_model_req.num_lookahead_slots)
+            k=execute_model_req.num_lookahead_slots,
+            extra_tensor_data=extra_tensor_data)
 
     @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(
@@ -356,6 +371,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         accepted_token_ids: torch.Tensor,  # shape: [batch_size, k+1]
         target_logprobs: torch.Tensor,  # shape: [batch_size, k+1, vocab_size]
         k: int,
+        extra_tensor_data: Optional[ExtraTensorData] = None,
     ) -> List[SamplerOutput]:
         """Given the accepted token ids, create a list of SamplerOutput.
 
@@ -422,6 +438,9 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
                         [sequence_index][:num_logprobs],
                         topk_logprobs=topk_logprobs_by_step[step_index]
                         [sequence_index][:num_logprobs],
+                        extra_tensor_data=None if
+                        extra_tensor_data is None else extra_tensor_data.index(
+                            sequence_index, step_index),
                     ))
 
             sampler_output_list.append(

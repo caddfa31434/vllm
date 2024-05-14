@@ -1,7 +1,7 @@
 import enum
 import json
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, ClassVar, List, Optional, Union
+from typing import TYPE_CHECKING, ClassVar, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 from transformers import PretrainedConfig
@@ -78,25 +78,26 @@ class ModelConfig:
     """
 
     def __init__(
-        self,
-        model: str,
-        tokenizer: str,
-        tokenizer_mode: str,
-        trust_remote_code: bool,
-        dtype: Union[str, torch.dtype],
-        seed: int,
-        revision: Optional[str] = None,
-        code_revision: Optional[str] = None,
-        tokenizer_revision: Optional[str] = None,
-        max_model_len: Optional[int] = None,
-        quantization: Optional[str] = None,
-        quantization_param_path: Optional[str] = None,
-        enforce_eager: bool = False,
-        max_context_len_to_capture: Optional[int] = None,
-        max_seq_len_to_capture: Optional[int] = None,
-        max_logprobs: int = 5,
-        skip_tokenizer_init: bool = False,
-        served_model_name: Optional[Union[str, List[str]]] = None,
+            self,
+            model: str,
+            tokenizer: str,
+            tokenizer_mode: str,
+            trust_remote_code: bool,
+            dtype: Union[str, torch.dtype],
+            seed: int,
+            revision: Optional[str] = None,
+            code_revision: Optional[str] = None,
+            tokenizer_revision: Optional[str] = None,
+            max_model_len: Optional[int] = None,
+            quantization: Optional[str] = None,
+            quantization_param_path: Optional[str] = None,
+            enforce_eager: bool = False,
+            max_context_len_to_capture: Optional[int] = None,
+            max_seq_len_to_capture: Optional[int] = None,
+            max_logprobs: int = 5,
+            skip_tokenizer_init: bool = False,
+            served_model_name: Optional[Union[str, List[str]]] = None,
+            extra_inputs: Set[str] = set(),
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -126,6 +127,13 @@ class ModelConfig:
                                                      max_model_len)
         self.served_model_name = get_served_model_name(model,
                                                        served_model_name)
+
+        self.extra_inputs: Dict[str, Tuple[Tuple[int],
+                                           Optional[torch.dtype]]] = {}
+        if "hidden_states" in extra_inputs:
+            self.extra_inputs["hidden_states"] = ((
+                self.hf_config.hidden_size, ), None)
+
         if not self.skip_tokenizer_init:
             self._verify_tokenizer_mode()
         self._verify_embedding_mode()
@@ -262,7 +270,8 @@ class ModelConfig:
             return self.hf_text_config.head_dim
         # FIXME(woosuk): This may not be true for all models.
         return (self.hf_text_config.hidden_size //
-                self.hf_text_config.num_attention_heads)
+                self.hf_text_config.num_attention_heads
+                ) if self.hf_text_config.num_attention_heads else 0
 
     def get_total_num_kv_heads(self) -> int:
         """Returns the total number of KV heads."""
@@ -321,6 +330,10 @@ class ModelConfig:
     def get_num_layers(self, parallel_config: "ParallelConfig") -> int:
         total_num_hidden_layers = self.hf_text_config.num_hidden_layers
         return total_num_hidden_layers // parallel_config.pipeline_parallel_size
+
+    def set_num_lookahead_tokens(self, num_lookahead_tokens: int):
+        if hasattr(self.hf_config, "set_num_lookahead_tokens"):
+            self.hf_config.set_num_lookahead_tokens(num_lookahead_tokens)
 
 
 class CacheConfig:
@@ -703,6 +716,7 @@ class SpeculativeConfig:
         target_parallel_config: ParallelConfig,
         target_dtype: str,
         speculative_model: Optional[str],
+        extra_inputs: Set[str],
         num_speculative_tokens: Optional[int],
         speculative_max_model_len: Optional[int],
         enable_chunked_prefill: bool,
@@ -812,13 +826,18 @@ class SpeculativeConfig:
                 revision=draft_revision,
                 code_revision=draft_code_revision,
                 tokenizer_revision=target_model_config.tokenizer_revision,
-                max_model_len=None,
+                max_model_len=target_model_config.max_model_len,
                 quantization=draft_quantization,
                 enforce_eager=target_model_config.enforce_eager,
                 max_seq_len_to_capture=target_model_config.
                 max_seq_len_to_capture,
                 max_logprobs=target_model_config.max_logprobs,
+                extra_inputs=extra_inputs,
             )
+
+            if num_speculative_tokens is not None:
+                draft_model_config.set_num_lookahead_tokens(
+                    num_speculative_tokens)
 
             draft_model_config.max_model_len = (
                 SpeculativeConfig._maybe_override_draft_max_model_len(

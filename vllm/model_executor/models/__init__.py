@@ -56,6 +56,8 @@ _GENERATION_MODELS = {
     "Starcoder2ForCausalLM": ("starcoder2", "Starcoder2ForCausalLM"),
     "ArcticForCausalLM": ("arctic", "ArcticForCausalLM"),
     "XverseForCausalLM": ("xverse", "XverseForCausalLM"),
+    # medusa
+    "MedusaModel": ("medusa", "Medusa"),
 }
 
 _EMBEDDING_MODELS = {

@@ -3,7 +3,8 @@ from typing import Dict, Optional
 from transformers import AutoConfig, PretrainedConfig
 
 from vllm.transformers_utils.configs import (ChatGLMConfig, DbrxConfig,
-                                             JAISConfig, MPTConfig, RWConfig)
+                                             JAISConfig, MPTConfig, RWConfig,
+                                             MedusaConfig)
 
 _CONFIG_REGISTRY: Dict[str, PretrainedConfig] = {
     "chatglm": ChatGLMConfig,
@@ -12,7 +13,14 @@ _CONFIG_REGISTRY: Dict[str, PretrainedConfig] = {
     "RefinedWeb": RWConfig,  # For tiiuae/falcon-40b(-instruct)
     "RefinedWebModel": RWConfig,  # For tiiuae/falcon-7b(-instruct)
     "jais": JAISConfig,
+    "medusa": MedusaConfig,
 }
+
+for name, cls in _CONFIG_REGISTRY.items():
+    try:
+        AutoConfig.register(name, cls)
+    except:
+        pass
 
 
 def get_config(model: str,
