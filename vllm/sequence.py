@@ -79,12 +79,15 @@ class ExtraTensorData:
 
     @classmethod
     def create_empty_like(
-            cls, ref: "ExtraTensorData", size: Tuple[int, ...]=(),
-            device: Union[str, torch.device]=None) -> "ExtraTensorData":
+            cls,
+            ref: "ExtraTensorData",
+            size: Tuple[int, ...] = (),
+            device: Union[str, torch.device] = None) -> "ExtraTensorData":
         return ExtraTensorData(
             **{
-                k: torch.zeros(
-                    (*size, v.shape[-1]), device=v.device if device is None else device, dtype=v.dtype)
+                k: torch.zeros((*size, v.shape[-1]),
+                               device=v.device if device is None else device,
+                               dtype=v.dtype)
                 for k, v in ref.items()
             })
 

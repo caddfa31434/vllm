@@ -13,12 +13,16 @@ from vllm.transformers_utils.configs.medusa import MedusaConfig
 
 
 class ResidualBlock(nn.Module):
+
     def __init__(self, hidden_size: int, num_layers: int) -> None:
         super().__init__()
-        
-        self.layers = nn.ModuleList([nn.Linear(hidden_size, hidden_size, bias=False) for _ in range(num_layers)])
+
+        self.layers = nn.ModuleList([
+            nn.Linear(hidden_size, hidden_size, bias=False)
+            for _ in range(num_layers)
+        ])
         self.act = nn.SiLU()
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
             x = x + self.act(layer(x))
@@ -26,35 +30,41 @@ class ResidualBlock(nn.Module):
 
 
 class Medusa(nn.Module):
-    def __init__(
-        self,
-        config: MedusaConfig,
-        **_
-    ) -> None:
+
+    def __init__(self, config: MedusaConfig, **_) -> None:
         super().__init__()
         self.config = config
         self.blocks = nn.ModuleList([
-            ResidualBlock(hidden_size=self.config.hidden_size, num_layers=self.config.num_hidden_layers) 
-            for _ in range(self.config.num_heads)])
+            ResidualBlock(hidden_size=self.config.hidden_size,
+                          num_layers=self.config.num_hidden_layers)
+            for _ in range(self.config.num_heads)
+        ])
         self.unpadded_vocab_size = config.vocab_size
 
-        self.lm_heads = nn.ModuleList([ParallelLMHead(
+        self.lm_heads = nn.ModuleList([
+            ParallelLMHead(
                 self.unpadded_vocab_size,
                 config.hidden_size,
                 org_num_embeddings=config.vocab_size,
                 padding_size=DEFAULT_VOCAB_PADDING_SIZE,
-            ) for _ in range(self.config.num_heads)])
+            ) for _ in range(self.config.num_heads)
+        ])
 
         logit_scale = getattr(config, "logit_scale", 1.0)
-        self.logits_processor = LogitsProcessor(self.unpadded_vocab_size, config.vocab_size, logit_scale)
-        
+        self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
+                                                config.vocab_size, logit_scale)
+
     def forward(self, hidden_states: torch.Tensor) -> list[torch.Tensor]:
         return [block(hidden_states) for block in self.blocks]
-    
-    def compute_logits(self, hidden_states: list[torch.Tensor],
-                       sampling_metadata: SamplingMetadata) -> list[torch.Tensor]:
-        return [self.logits_processor(lm_head.weight, hs, sampling_metadata) for hs,lm_head in zip(hidden_states, self.lm_heads)]
-    
+
+    def compute_logits(
+            self, hidden_states: list[torch.Tensor],
+            sampling_metadata: SamplingMetadata) -> list[torch.Tensor]:
+        return [
+            self.logits_processor(lm_head.weight, hs, sampling_metadata)
+            for hs, lm_head in zip(hidden_states, self.lm_heads)
+        ]
+
     def sample(
         self,
         logits: List[torch.Tensor],
@@ -68,7 +78,7 @@ class Medusa(nn.Module):
         token_id_list = []
         token_prob_list = []
         token_logprob_list = []
-        
+
         for idx, seq_group in enumerate(sampling_metadata.seq_groups):
             token_id_list.append(token_ids[:, seq_group.sample_indices])
             token_prob_list.append(probs[:, seq_group.sample_indices])
@@ -85,7 +95,7 @@ class Medusa(nn.Module):
                 ))
 
         return outputs
-    
+
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in weights:
