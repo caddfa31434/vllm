@@ -542,7 +542,7 @@ class ModelRunner:
         slot_mapping_tensor = torch.tensor(slot_mapping,
                                            dtype=torch.long,
                                            device=self.device)
-        
+
         if extra_inputs is not None:
             extra_inputs = ExtraTensorData.stack(extra_inputs)
 
@@ -711,7 +711,7 @@ class ModelRunner:
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
-        extra_inputs: ExtraTensorData = ExtraTensorData(),
+        extra_inputs: ExtraTensorData = None,
         extra_outputs: Set[str] = set(),
     ) -> Tuple[Optional[SamplerOutput], ExtraTensorData]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
@@ -981,7 +981,7 @@ class ModelRunner:
 
                 graph_runner.capture(
                     model_inputs,
-                    memory_pool=self.graph_memory_pool
+                    memory_pool=self.graph_memory_pool,
                     stream=graph_capture_context.stream,
                 )
                 self.graph_memory_pool = graph_runner.graph.pool()
