@@ -8,7 +8,7 @@ import torch.distributed
 
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ParallelConfig, SchedulerConfig,
-                         VisionLanguageConfig)
+                         SpeculativeConfig, VisionLanguageConfig)
 from vllm.distributed import (broadcast_tensor_dict,
                               ensure_model_parallel_initialized,
                               init_distributed_environment,
@@ -44,6 +44,7 @@ class Worker(WorkerBase):
         distributed_init_method: str,
         lora_config: Optional[LoRAConfig] = None,
         vision_language_config: Optional[VisionLanguageConfig] = None,
+        speculative_config: Optional[SpeculativeConfig] = None,
         is_driver_worker: bool = False,
     ) -> None:
         self.model_config = model_config
@@ -119,6 +120,18 @@ class Worker(WorkerBase):
 
     def load_model(self):
         self.model_runner.load_model()
+
+    def save_sharded_state(
+        self,
+        path: str,
+        pattern: Optional[str] = None,
+        max_size: Optional[int] = None,
+    ) -> None:
+        self.model_runner.save_sharded_state(
+            path,
+            pattern=pattern,
+            max_size=max_size,
+        )
 
     @torch.inference_mode()
     def determine_num_available_blocks(self) -> Tuple[int, int]:
