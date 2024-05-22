@@ -197,7 +197,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         if target_extra_output_data is not None:
             for key in target_extra_output_data:
                 target_extra_output_data[key] = target_extra_output_data[
-                    key].squeeze().reshape(spec_expanded_bs, k + 1, -1)
+                    key].squeeze().reshape(spec_expanded_bs, k + 1, target_extra_output_data[key].shape[-1])
 
             all_extra_output_data = ExtraTensorData.create_empty_like(
                 target_extra_output_data,
