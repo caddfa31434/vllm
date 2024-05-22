@@ -264,31 +264,6 @@ dequant_8bit<nv_bfloat16>(int q) {
   return frag_b;
 }
 
-template <>
-__device__ inline typename ScalarType<nv_bfloat16>::FragB dequant_8bit<nv_bfloat16>(int q) {
-  typename ScalarType<nv_bfloat16>::FragB frag_b;
-
-  float fp32_intermediates[4];
-  uint32_t * fp32_intermediates_casted = reinterpret_cast<uint32_t*>(fp32_intermediates);
-
-  static constexpr uint32_t fp32_base = 0x4B000000;
-  fp32_intermediates_casted[0]  = __byte_perm(q, fp32_base, 0x7650);
-  fp32_intermediates_casted[1] = __byte_perm(q, fp32_base, 0x7652);
-  fp32_intermediates_casted[2]  = __byte_perm(q, fp32_base, 0x7651);
-  fp32_intermediates_casted[3] = __byte_perm(q, fp32_base, 0x7653);
-
-  fp32_intermediates[0] -= 8388736.f;
-  fp32_intermediates[1] -= 8388736.f;
-  fp32_intermediates[2] -= 8388736.f;
-  fp32_intermediates[3] -= 8388736.f;
-
-  uint32_t* bf16_result_ptr = reinterpret_cast<uint32_t*>(&frag_b);
-  bf16_result_ptr[0] = __byte_perm(fp32_intermediates_casted[0], fp32_intermediates_casted[1], 0x7632);
-  bf16_result_ptr[1] = __byte_perm(fp32_intermediates_casted[2], fp32_intermediates_casted[3], 0x7632);
-
-  return frag_b;
-}
-
 // Multiply dequantized values by the corresponding quantization scale; used
 // only for grouped quantization.
 template <typename scalar_t>

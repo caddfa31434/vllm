@@ -9,6 +9,8 @@ from vllm.transformers_utils.configs import (ChatGLMConfig, DbrxConfig,
 
 logger = init_logger(__name__)
 
+logger = init_logger(__name__)
+
 _CONFIG_REGISTRY: Dict[str, PretrainedConfig] = {
     "chatglm": ChatGLMConfig,
     "dbrx": DbrxConfig,
