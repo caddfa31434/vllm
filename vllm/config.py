@@ -45,6 +45,9 @@ class ModelConfig:
         code_revision: The specific revision to use for the model code on
             Hugging Face Hub. It can be a branch name, a tag name, or a
             commit id. If unspecified, will use the default version.
+        rope_scaling: Dictionary containing the scaling configuration for the
+            RoPE embeddings. When using this flag, don't update
+            `max_position_embeddings` to the expected new maximum.
         tokenizer_revision: The specific tokenizer version to use. It can be a
             branch name, a tag name, or a commit id. If unspecified, will use
             the default version.
@@ -75,26 +78,27 @@ class ModelConfig:
     """
 
     def __init__(
-            self,
-            model: str,
-            tokenizer: str,
-            tokenizer_mode: str,
-            trust_remote_code: bool,
-            dtype: Union[str, torch.dtype],
-            seed: int,
-            revision: Optional[str] = None,
-            code_revision: Optional[str] = None,
-            tokenizer_revision: Optional[str] = None,
-            max_model_len: Optional[int] = None,
-            quantization: Optional[str] = None,
-            quantization_param_path: Optional[str] = None,
-            enforce_eager: bool = False,
-            max_context_len_to_capture: Optional[int] = None,
-            max_seq_len_to_capture: Optional[int] = None,
-            max_logprobs: int = 5,
-            skip_tokenizer_init: bool = False,
-            served_model_name: Optional[Union[str, List[str]]] = None,
-            extra_inputs: Set[str] = set(),
+        self,
+        model: str,
+        tokenizer: str,
+        tokenizer_mode: str,
+        trust_remote_code: bool,
+        dtype: Union[str, torch.dtype],
+        seed: int,
+        revision: Optional[str] = None,
+        code_revision: Optional[str] = None,
+        rope_scaling: Optional[dict] = None,
+        tokenizer_revision: Optional[str] = None,
+        max_model_len: Optional[int] = None,
+        quantization: Optional[str] = None,
+        quantization_param_path: Optional[str] = None,
+        enforce_eager: bool = False,
+        max_context_len_to_capture: Optional[int] = None,
+        max_seq_len_to_capture: Optional[int] = None,
+        max_logprobs: int = 5,
+        skip_tokenizer_init: bool = False,
+        served_model_name: Optional[Union[str, List[str]]] = None,
+        extra_inputs: Set[str] = set(),
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -103,6 +107,7 @@ class ModelConfig:
         self.seed = seed
         self.revision = revision
         self.code_revision = code_revision
+        self.rope_scaling = rope_scaling
         self.tokenizer_revision = tokenizer_revision
         self.quantization = quantization
         self.quantization_param_path = quantization_param_path
@@ -117,7 +122,7 @@ class ModelConfig:
         self.skip_tokenizer_init = skip_tokenizer_init
 
         self.hf_config = get_config(self.model, trust_remote_code, revision,
-                                    code_revision)
+                                    code_revision, rope_scaling)
         self.hf_text_config = get_hf_text_config(self.hf_config)
         self.dtype = _get_and_verify_dtype(self.hf_text_config, dtype)
         self.max_model_len = _get_and_verify_max_len(self.hf_text_config,
