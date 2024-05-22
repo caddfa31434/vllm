@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional, Tuple
 
 import torch
 
-from vllm.sequence import ExecuteModelRequest
+from vllm.sequence import ExecuteModelRequest, ExtraTensorData
 
 
 @dataclass
@@ -69,5 +70,5 @@ class SpeculativeScorer(ABC):
         self,
         execute_model_req: ExecuteModelRequest,
         proposals: SpeculativeProposals,
-    ) -> SpeculativeScores:
+    ) -> Tuple[SpeculativeScores, Optional[ExtraTensorData]]:
         raise NotImplementedError

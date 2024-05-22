@@ -49,7 +49,7 @@ class ModelInput(NamedTuple):
     num_prefill_tokens: int
     num_decode_tokens: int
     num_prefills: int
-    extra_inputs: Optional[List[ExtraTensorData]]
+    extra_inputs: Optional[ExtraTensorData]
 
     @classmethod
     def empty(cls, device):
@@ -543,8 +543,8 @@ class ModelRunner:
                                            dtype=torch.long,
                                            device=self.device)
 
-        if extra_inputs is not None:
-            extra_inputs = ExtraTensorData.stack(extra_inputs)
+        extra_inputs_tensor = None if extra_inputs is None else ExtraTensorData.stack(
+            extra_inputs)
 
         if self.attn_backend.get_name() == "flashinfer":
             if not hasattr(self, "flashinfer_workspace_buffer"):
@@ -621,14 +621,15 @@ class ModelRunner:
             num_prefill_tokens=num_prefill_tokens,
             num_decode_tokens=num_decode_tokens,
             num_prefills=num_prefills,
-            extra_inputs=extra_inputs,
+            extra_inputs=extra_inputs_tensor,
         )
 
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
-               Set[LoRARequest], LoRAMapping, torch.Tensor]:
+               Set[LoRARequest], LoRAMapping, torch.Tensor,
+               Optional[ExtraTensorData]]:
         if self.is_driver_worker:
             # Prepare input tensors.
             (
@@ -762,17 +763,17 @@ class ModelRunner:
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
 
         # Only perform sampling in the driver worker.
-        if not self.is_driver_worker:
-            return None
+        if self.is_driver_worker:
+            # Sample the next token.
+            output = self.model.sample(
+                logits=logits,
+                sampling_metadata=sampling_metadata,
+            )
 
-        # Sample the next token.
-        output = self.model.sample(
-            logits=logits,
-            sampling_metadata=sampling_metadata,
-        )
-
-        sampled_extra_tensor_data = extra_tensor_data.index_select(
-            0, sampling_metadata.selected_token_indices)
+            sampled_extra_tensor_data = extra_tensor_data.index_select(
+                0, sampling_metadata.selected_token_indices)
+        else:
+            output = None
 
         if extra_outputs:
             if prefill_meta is not None:
@@ -782,11 +783,13 @@ class ModelRunner:
                     extra_tensor_data[k].masked_fill_(
                         (input_positions == 0).unsqueeze(-1), 0)
 
-                _move_extra_tensor_data_to_seq_outputs(
-                    output, sampled_extra_tensor_data, sampling_metadata)
+                if output is not None:
+                    _move_extra_tensor_data_to_seq_outputs(
+                        output, sampled_extra_tensor_data, sampling_metadata)
             else:
                 extra_tensor_data.clear()
-                output.extra_tensor_data = sampled_extra_tensor_data
+                if output is not None:
+                    output.extra_tensor_data = sampled_extra_tensor_data
 
         return output, extra_tensor_data
 

@@ -96,12 +96,18 @@ class ExtraTensorData:
         data: List[Optional["ExtraTensorData"]],
         dim: int = 0,
     ) -> Optional["ExtraTensorData"]:
-        to_stack: Dict[str, torch.Tensor] = {}
+        if len(data) == 0: return None
+
         for d in data:
             if d is None: return None
 
+        assert isinstance(data[0], ExtraTensorData)
+
+        to_stack: Dict[str, torch.Tensor] = {k: [] for k in data[0]}
+        for d in data:
+            assert isinstance(d, ExtraTensorData)
+
             for k, v in d.items():
-                to_stack[k] = to_stack.get(k, [])
                 to_stack[k].append(v)
 
         return ExtraTensorData(

@@ -197,10 +197,18 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         if target_extra_output_data is not None:
             for key in target_extra_output_data:
                 target_extra_output_data[key] = target_extra_output_data[
-                    key].squeeze().reshape(spec_expanded_bs, k + 1, target_extra_output_data[key].shape[-1])
+                    key].squeeze().reshape(
+                        spec_expanded_bs, k + 1,
+                        target_extra_output_data[key].shape[-1])
 
+        if target_extra_output_data is not None:
             all_extra_output_data = ExtraTensorData.create_empty_like(
                 target_extra_output_data,
+                size=(contracted_bs, k + 1),
+                device=self._device)
+        elif non_spec_target_extra_output_data is not None:
+            all_extra_output_data = ExtraTensorData.create_empty_like(
+                non_spec_target_extra_output_data,
                 size=(contracted_bs, k + 1),
                 device=self._device)
 
@@ -209,7 +217,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             all_probs[non_spec_indices, :1, :] = non_spec_target_probs
             all_logprobs[non_spec_indices, :1, :] = non_spec_target_logprobs
 
-            if all_extra_output_data:
+            if all_extra_output_data and non_spec_target_extra_output_data is not None:
                 for k in all_extra_output_data:
                     all_extra_output_data[k][
                         non_spec_indices, :
@@ -220,7 +228,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             all_probs[spec_indices] = target_probs
             all_logprobs[spec_indices] = target_logprobs
 
-            if all_extra_output_data:
+            if all_extra_output_data and target_extra_output_data is not None:
                 for k in all_extra_output_data:
                     all_extra_output_data[k][
                         spec_indices] = target_extra_output_data[k]
