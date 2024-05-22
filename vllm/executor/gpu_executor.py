@@ -90,8 +90,7 @@ class GPUExecutor(ExecutorBase):
     ) -> List[Union[SamplerOutput, PoolerOutput]]:
         output = self.driver_worker.execute_model(execute_model_req)
 
-        if not (isinstance(output[0], SamplerOutput)
-                or isinstance(output[0], PoolerOutput)):
+        if not isinstance(output[0], (SamplerOutput, PoolerOutput)):
             output = [sampler_output for sampler_output, _ in output]
 
         return output
@@ -122,8 +121,7 @@ class GPUExecutorAsync(GPUExecutor, ExecutorAsyncBase):
         output = await make_async(self.driver_worker.execute_model
                                   )(execute_model_req=execute_model_req, )
 
-        if not (isinstance(output[0], SamplerOutput)
-                or isinstance(output[0], PoolerOutput)):
+        if not isinstance(output[0], (SamplerOutput, PoolerOutput)):
             output = [sampler_output for sampler_output, _ in output]
 
         return output

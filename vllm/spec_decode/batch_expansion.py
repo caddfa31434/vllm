@@ -84,15 +84,16 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         assert len(target_sampler_output) == 1, "expected single-step output"
         target_sampler_output, _ = target_sampler_output[0]
 
-        all_tokens, all_probs, spec_logprobs, all_extra_output_data = self._contract_batch(
-            contracted_bs=len(execute_model_req.seq_group_metadata_list),
-            target_sampler_output=target_sampler_output,
-            proposals=proposals,
-            num_scoring_tokens=num_scoring_tokens,
-            non_spec_indices=non_spec_indices,
-            spec_indices=spec_indices,
-            k=execute_model_req.num_lookahead_slots,
-        )
+        (all_tokens, all_probs, spec_logprobs,
+         all_extra_output_data) = self._contract_batch(
+             contracted_bs=len(execute_model_req.seq_group_metadata_list),
+             target_sampler_output=target_sampler_output,
+             proposals=proposals,
+             num_scoring_tokens=num_scoring_tokens,
+             non_spec_indices=non_spec_indices,
+             spec_indices=spec_indices,
+             k=execute_model_req.num_lookahead_slots,
+         )
 
         return SpeculativeScores(
             probs=all_probs,
@@ -217,7 +218,8 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             all_probs[non_spec_indices, :1, :] = non_spec_target_probs
             all_logprobs[non_spec_indices, :1, :] = non_spec_target_logprobs
 
-            if all_extra_output_data and non_spec_target_extra_output_data is not None:
+            if all_extra_output_data and \
+                non_spec_target_extra_output_data is not None:
                 for k in all_extra_output_data:
                     all_extra_output_data[k][
                         non_spec_indices, :
@@ -382,8 +384,9 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         if sampler_output.extra_tensor_data is None:
             spec_extra_output_data, no_spec_extra_output_data = (None, None)
         else:
-            spec_extra_output_data, no_spec_extra_output_data = sampler_output.extra_tensor_data.split(
-                split_sizes)
+            spec_extra_output_data, no_spec_extra_output_data = sampler_output\
+                                                                    .extra_tensor_data\
+                                                                    .split(split_sizes)
 
         # Convert scores to tensors.
         sampler_output.sampled_token_probs = spec_probs

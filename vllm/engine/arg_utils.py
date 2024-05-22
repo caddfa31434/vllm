@@ -488,9 +488,8 @@ class EngineArgs:
             '--extra-inputs-for-draft-model',
             type=nullable_str,
             default=EngineArgs.extra_inputs_for_draft_model,
-            help=
-            'Extra model inputs used by draft model. These should come as outputs from the target model.'
-        )
+            help='Extra model inputs used by draft model.'
+            'These should come as outputs from the target model.')
 
         parser.add_argument(
             '--num-speculative-tokens',
@@ -595,7 +594,7 @@ class EngineArgs:
 
         try:
             extra_inputs = set(self.extra_inputs_for_draft_model.split(","))
-        except:
+        except Exception:
             extra_inputs = set()
 
         speculative_config = SpeculativeConfig.maybe_create_spec_config(

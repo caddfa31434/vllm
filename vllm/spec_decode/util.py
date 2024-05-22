@@ -193,7 +193,8 @@ def sampler_output_to_torch(
             sampled_extra_output_data[k] = sampled_extra_output_data[
                 k].transpose(0, 1)
 
-    return sampled_token_ids, sampled_token_probs, sampled_token_logprobs, sampled_extra_output_data
+    return (sampled_token_ids, sampled_token_probs, sampled_token_logprobs,
+            sampled_extra_output_data)
 
 
 def maybe_mock_device_tensors(sampler_output: SamplerOutput, batch_size: int,

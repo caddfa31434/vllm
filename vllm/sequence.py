@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Union
 
 import torch
+
 from vllm.block import LogicalTokenBlock
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
@@ -96,10 +97,12 @@ class ExtraTensorData:
         data: List[Optional["ExtraTensorData"]],
         dim: int = 0,
     ) -> Optional["ExtraTensorData"]:
-        if len(data) == 0: return None
+        if len(data) == 0:
+            return None
 
         for d in data:
-            if d is None: return None
+            if d is None:
+                return None
 
         assert isinstance(data[0], ExtraTensorData)
 

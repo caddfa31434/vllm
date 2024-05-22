@@ -12,8 +12,8 @@ from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.metrics import AsyncMetricsCollector
-from vllm.spec_decode.multi_step_worker import MultiStepWorker
 from vllm.spec_decode.multi_head_worker import MultiHeadWorker
+from vllm.spec_decode.multi_step_worker import MultiStepWorker
 from vllm.spec_decode.ngram_worker import NGramWorker
 from vllm.spec_decode.util import (create_sequence_group_output,
                                    get_all_num_logprobs, get_all_seq_ids,
@@ -337,8 +337,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         not called, meaning that the kv-cache in proposer for requests is not
         updated, so they cannot enable spec decode in the rest decoding.
         """
-        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs.copy(
-        )
+        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs\
+                                                              .copy()
         model_outputs = self.scorer_worker.execute_model(execute_model_req)
         assert len(model_outputs) == 1
 
@@ -392,8 +392,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Generate proposals using draft worker.
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
 
-        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs.copy(
-        )
+        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs\
+                                                              .copy()
         proposal_scores, extra_tensor_data = self.scorer.score_proposals(
             execute_model_req,
             proposals,

@@ -543,8 +543,8 @@ class ModelRunner:
                                            dtype=torch.long,
                                            device=self.device)
 
-        extra_inputs_tensor = None if extra_inputs is None else ExtraTensorData.stack(
-            extra_inputs)
+        extra_inputs_tensor = None if extra_inputs is None else \
+                              ExtraTensorData.stack(extra_inputs)
 
         if self.attn_backend.get_name() == "flashinfer":
             if not hasattr(self, "flashinfer_workspace_buffer"):
@@ -713,7 +713,7 @@ class ModelRunner:
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
         extra_inputs: ExtraTensorData = None,
-        extra_outputs: Set[str] = set(),
+        extra_outputs: Optional[Set[str]] = None,
     ) -> Tuple[Optional[SamplerOutput], ExtraTensorData]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
          lora_requests, lora_mapping, multi_modal_input, prepared_extra_inputs
@@ -756,7 +756,7 @@ class ModelRunner:
 
         hidden_states = model_executable(**execute_model_kwargs)
 
-        if "hidden_states" in extra_outputs:
+        if extra_outputs and "hidden_states" in extra_outputs:
             extra_tensor_data["hidden_states"] = hidden_states
 
         # Compute the logits.

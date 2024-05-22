@@ -1,7 +1,8 @@
 import enum
 import json
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, ClassVar, Dict, List, Optional, Set, Tuple, Union
+from typing import (TYPE_CHECKING, ClassVar, Dict, List, Optional, Set, Tuple,
+                    Union)
 
 import torch
 from transformers import PretrainedConfig
@@ -98,7 +99,7 @@ class ModelConfig:
         max_logprobs: int = 5,
         skip_tokenizer_init: bool = False,
         served_model_name: Optional[Union[str, List[str]]] = None,
-        extra_inputs: Set[str] = set(),
+        extra_inputs: Optional[Set[str]] = None,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -132,7 +133,7 @@ class ModelConfig:
 
         self.extra_inputs: Dict[str, Tuple[Tuple[int],
                                            Optional[torch.dtype]]] = {}
-        if "hidden_states" in extra_inputs:
+        if extra_inputs and "hidden_states" in extra_inputs:
             self.extra_inputs["hidden_states"] = ((
                 self.hf_config.hidden_size, ), None)
 

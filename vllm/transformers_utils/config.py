@@ -1,11 +1,12 @@
+import contextlib
 from typing import Dict, Optional
 
 from transformers import AutoConfig, PretrainedConfig
 
 from vllm.logger import init_logger
 from vllm.transformers_utils.configs import (ChatGLMConfig, DbrxConfig,
-                                             JAISConfig, MPTConfig, RWConfig,
-                                             MedusaConfig)
+                                             JAISConfig, MedusaConfig,
+                                             MPTConfig, RWConfig)
 
 logger = init_logger(__name__)
 
@@ -21,11 +22,9 @@ _CONFIG_REGISTRY: Dict[str, PretrainedConfig] = {
     "medusa": MedusaConfig,
 }
 
-for name, cls in _CONFIG_REGISTRY.items():
-    try:
+with contextlib.suppress(ValueError):
+    for name, cls in _CONFIG_REGISTRY.items():
         AutoConfig.register(name, cls)
-    except:
-        pass
 
 
 def get_config(model: str,
