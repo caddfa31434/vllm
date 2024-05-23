@@ -331,10 +331,6 @@ class Worker(WorkerBase):
     def vocab_size(self) -> int:
         return self.model_runner.vocab_size
 
-    @property
-    def extra_inputs(self) -> Set[str]:
-        return set(self.model_config.extra_inputs.keys())
-
     def get_cache_block_size_bytes(self) -> int:
         """Get the size of the KV cache block size in bytes.
         """

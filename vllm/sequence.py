@@ -224,8 +224,11 @@ class SequenceData:
         self._num_computed_tokens = 0
         self._stage: SequenceStage = SequenceStage.PREFILL
 
-    def append_token_id(self, token_id: int, logprob: float,
-                        extra_tensor_data: Optional[ExtraTensorData]) -> None:
+    def append_token_id(
+            self,
+            token_id: int,
+            logprob: float,
+            extra_tensor_data: Optional[ExtraTensorData] = None) -> None:
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
         self.extra_tensor_data = extra_tensor_data

@@ -74,6 +74,13 @@ class WorkerBase(ABC):
     def list_loras(self) -> Set[int]:
         raise NotImplementedError
 
+    @property
+    def extra_inputs(self) -> Set[str]:
+        if hasattr(self, "model_config") and hasattr(self.model_config,
+                                                     "extra_inputs"):
+            return set(self.model_config.extra_inputs.keys())
+        return set()
+
 
 class LoraNotSupportedWorkerBase(WorkerBase):
     """Partial implementation of WorkerBase that raises exceptions when LoRA

@@ -50,6 +50,8 @@ class EmbeddingModelRunner(ModelRunner):
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[torch.Tensor],
+        extra_inputs: Optional[ExtraTensorData] = None,
+        extra_outputs: Optional[Set[str]] = None,
     ) -> Optional[PoolerOutput]:
         (input_tokens, input_positions, attn_metadata, pooling_metadata,
          lora_requests, lora_mapping, multi_modal_input,
