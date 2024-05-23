@@ -827,7 +827,7 @@ class SpeculativeConfig:
                 revision=draft_revision,
                 code_revision=draft_code_revision,
                 tokenizer_revision=target_model_config.tokenizer_revision,
-                max_model_len=target_model_config.max_model_len,
+                max_model_len=None,
                 quantization=draft_quantization,
                 enforce_eager=target_model_config.enforce_eager,
                 max_seq_len_to_capture=target_model_config.
