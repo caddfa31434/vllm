@@ -1085,8 +1085,12 @@ class CUDAGraphRunner:
             self.input_buffers["block_tables"].copy_(
                 attn_metadata.decode_metadata.block_tables, non_blocking=True)
 
+        kwargs = {}  # What happens with this?
         for k, v in model_inputs.items():
-            self.input_buffers[k].copy_(v, non_blocking=True)
+            if k in self.input_buffers:
+                self.input_buffers[k].copy_(v, non_blocking=True)
+            else:
+                kwargs[k] = v
 
         # Run the graph.
         self.graph.replay()
