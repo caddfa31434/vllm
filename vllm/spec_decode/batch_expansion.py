@@ -43,7 +43,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         self,
         execute_model_req: ExecuteModelRequest,
         proposals: SpeculativeProposals,
-    ) -> Tuple[SpeculativeScores, Optional[ExtraTensorData]]:
+    ) -> SpeculativeScores:
         """Score the proposed tokens via the scorer model.
 
         This converts each input sequence to a set of k+1 target sequences. The
@@ -82,7 +82,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             execute_model_req=execute_model_req.clone(
                 seq_group_metadata_list=target_seq_group_metadata_list, ))
         assert len(target_sampler_output) == 1, "expected single-step output"
-        target_sampler_output, _ = target_sampler_output[0]
+        target_sampler_output = target_sampler_output[0]
 
         (all_tokens, all_probs, spec_logprobs,
          all_extra_output_data) = self._contract_batch(
@@ -99,7 +99,8 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             probs=all_probs,
             token_ids=all_tokens,
             logprobs=spec_logprobs,
-        ), all_extra_output_data
+            extra_tensor_data=all_extra_output_data,
+        )
 
     def _expand_batch(
         self,

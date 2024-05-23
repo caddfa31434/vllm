@@ -22,8 +22,8 @@ _CONFIG_REGISTRY: Dict[str, PretrainedConfig] = {
     "medusa": MedusaConfig,
 }
 
-with contextlib.suppress(ValueError):
-    for name, cls in _CONFIG_REGISTRY.items():
+for name, cls in _CONFIG_REGISTRY.items():
+    with contextlib.suppress(ValueError):
         AutoConfig.register(name, cls)
 
 

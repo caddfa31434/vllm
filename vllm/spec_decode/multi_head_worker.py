@@ -48,7 +48,7 @@ class MultiHeadWorker(Worker):
         execute_model_req: ExecuteModelRequest,
         sample_len: int,
     ) -> Tuple[List[SamplerOutput], bool]:
-        model_outputs, _ = super().execute_model(
+        model_outputs = super().execute_model(
             execute_model_req=execute_model_req)[0]
         return model_outputs, False
 

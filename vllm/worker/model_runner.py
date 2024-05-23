@@ -722,7 +722,7 @@ class ModelRunner:
         kv_caches: List[torch.Tensor],
         extra_inputs: ExtraTensorData = None,
         extra_outputs: Optional[Set[str]] = None,
-    ) -> Tuple[Optional[SamplerOutput], ExtraTensorData]:
+    ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
          lora_requests, lora_mapping, multi_modal_input, prepared_extra_inputs
          ) = self.prepare_input_tensors(seq_group_metadata_list)
@@ -771,19 +771,19 @@ class ModelRunner:
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
 
         # Only perform sampling in the driver worker.
-        if self.is_driver_worker:
-            # Sample the next token.
-            output = self.model.sample(
-                logits=logits,
-                sampling_metadata=sampling_metadata,
-            )
+        if not self.is_driver_worker:
+            return None
 
-            sampled_extra_tensor_data = extra_tensor_data.index_select(
-                0, sampling_metadata.selected_token_indices)
-        else:
-            output = None
+        # Sample the next token.
+        output = self.model.sample(
+            logits=logits,
+            sampling_metadata=sampling_metadata,
+        )
 
         if extra_outputs:
+            sampled_extra_tensor_data = extra_tensor_data.index_select(
+                0, sampling_metadata.selected_token_indices)
+
             if prefill_meta is not None:
                 for k in extra_tensor_data:
                     extra_tensor_data[k] = extra_tensor_data[k].roll(shifts=1,
@@ -794,12 +794,13 @@ class ModelRunner:
                 if output is not None:
                     _move_extra_tensor_data_to_seq_outputs(
                         output, sampled_extra_tensor_data, sampling_metadata)
+
+                    output.extra_tensor_data = extra_tensor_data
             else:
-                extra_tensor_data.clear()
                 if output is not None:
                     output.extra_tensor_data = sampled_extra_tensor_data
 
-        return output, extra_tensor_data
+        return output
 
     @torch.inference_mode()
     def profile_run(self) -> None:

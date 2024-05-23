@@ -278,6 +278,9 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         self._maybe_disable_speculative_tokens(
             disable_all_speculation, execute_model_req.seq_group_metadata_list)
 
+        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs\
+                                                              .copy()
+
         # If no spec tokens, call the proposer and scorer workers normally.
         # Used for prefill.
         if num_lookahead_slots == 0 or len(
@@ -327,15 +330,12 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         not called, meaning that the kv-cache in proposer for requests is not
         updated, so they cannot enable spec decode in the rest decoding.
         """
-        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs\
-                                                              .copy()
-        model_outputs = self.scorer_worker.execute_model(execute_model_req)
-        assert len(model_outputs) == 1
-
-        sampler_output, prefill_extra_tensor_data = model_outputs[0]
+        sampler_output = self.scorer_worker.execute_model(execute_model_req)
+        assert len(sampler_output) == 1
+        sampler_output = sampler_output[0]
 
         execute_model_req.extra_outputs.clear()
-        execute_model_req.extra_inputs = prefill_extra_tensor_data
+        execute_model_req.extra_inputs = sampler_output.extra_tensor_data
 
         if not skip_proposer:
             self.proposer_worker.execute_model(execute_model_req)
@@ -389,9 +389,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Generate proposals using draft worker.
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
 
-        execute_model_req.extra_outputs = self.proposer_worker.extra_inputs\
-                                                              .copy()
-        proposal_scores, extra_tensor_data = self.scorer.score_proposals(
+        proposal_scores = self.scorer.score_proposals(
             execute_model_req,
             proposals,
         )
@@ -405,7 +403,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             accepted_token_ids,
             target_logprobs=target_logprobs,
             k=execute_model_req.num_lookahead_slots,
-            extra_tensor_data=extra_tensor_data)
+            extra_tensor_data=proposal_scores.extra_tensor_data)
 
     @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(

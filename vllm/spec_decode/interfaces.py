@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -47,10 +47,14 @@ class SpeculativeScores:
     # tokens and also non-speculative normal decoding.
     token_ids: torch.Tensor
 
+    # Extra data output by the model
+    extra_tensor_data: Optional[ExtraTensorData]
+
     def __repr__(self):
         return (f"SpeculativeScores("
                 f"probs={self.probs.shape}, "
-                f"token_ids={self.token_ids.shape})")
+                f"token_ids={self.token_ids.shape}, "
+                f"extra_tensor_data={self.extra_tensor_data})")
 
 
 class SpeculativeProposer(ABC):
@@ -70,5 +74,5 @@ class SpeculativeScorer(ABC):
         self,
         execute_model_req: ExecuteModelRequest,
         proposals: SpeculativeProposals,
-    ) -> Tuple[SpeculativeScores, Optional[ExtraTensorData]]:
+    ) -> SpeculativeScores:
         raise NotImplementedError

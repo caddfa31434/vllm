@@ -15,8 +15,7 @@ from vllm.distributed import (broadcast_tensor_dict,
                               set_custom_all_reduce)
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
-from vllm.sequence import (ExecuteModelRequest, ExtraTensorData, PoolerOutput,
-                           SamplerOutput)
+from vllm.sequence import ExecuteModelRequest, PoolerOutput, SamplerOutput
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.embedding_model_runner import EmbeddingModelRunner
 from vllm.worker.model_runner import ModelRunner
@@ -273,8 +272,10 @@ class Worker(WorkerBase):
         output = self.model_runner.execute_model(
             seq_group_metadata_list,
             self.gpu_cache,
-            extra_inputs=execute_model_req.extra_inputs,
-            extra_outputs=execute_model_req.extra_outputs)
+            extra_inputs=None
+            if execute_model_req is None else execute_model_req.extra_inputs,
+            extra_outputs=None
+            if execute_model_req is None else execute_model_req.extra_outputs)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
