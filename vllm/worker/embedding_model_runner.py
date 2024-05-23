@@ -48,7 +48,7 @@ class EmbeddingModelRunner(ModelRunner):
     @torch.inference_mode()
     def execute_model(
         self,
-        seq_group_metadata_list: List[SequenceGroupMetadata],
+        seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[torch.Tensor],
     ) -> Optional[PoolerOutput]:
         (input_tokens, input_positions, attn_metadata, pooling_metadata,
@@ -85,11 +85,12 @@ class EmbeddingModelRunner(ModelRunner):
 
     def prepare_input_tensors(
         self,
-        seq_group_metadata_list: List[SequenceGroupMetadata],
+        seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, PoolingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor,
                Optional[ExtraTensorData]]:
         if self.is_driver_worker:
+            assert seq_group_metadata_list is not None
             # Prepare input tensors.
             (
                 input_tokens,
