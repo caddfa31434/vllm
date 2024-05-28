@@ -58,6 +58,7 @@ _GENERATION_MODELS = {
     "XverseForCausalLM": ("xverse", "XverseForCausalLM"),
     # medusa
     "MedusaModel": ("medusa", "Medusa"),
+    "Phi3SmallForCausalLM": ("phi3_small", "Phi3SmallForCausalLM"),
 }
 
 _EMBEDDING_MODELS = {
