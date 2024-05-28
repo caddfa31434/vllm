@@ -312,7 +312,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             self, execute_model_req: ExecuteModelRequest) -> bool:
         # When the batch size is too large, disable speculative decoding
         # to stop trading off throughput for latency.
-        disable_all_speculation = (execute_model_req.running_queue_size >=
+        disable_all_speculation = execute_model_req.dont_speculate or \
+                                   (execute_model_req.running_queue_size >=
                                    self.disable_by_batch_size)
 
         return disable_all_speculation
@@ -370,16 +371,29 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         if not data:
             return False
         num_lookahead_slots = data["num_lookahead_slots"]
+        disable_all_speculation = data["disable_all_speculation"]
 
         # Even if num_lookahead_slots is zero, we want to run the proposer model
         # as it may have KV.
         #
         # We run the proposer once per lookahead slot. In the future we should
         # delegate how many times it runs to the proposer.
-        for _ in range(max(num_lookahead_slots, 1)):
+
+        no_spec = num_lookahead_slots == 0 or disable_all_speculation
+
+        # For no_spec case, execute scorer first since that's how it's done
+        # in driver worker
+        if no_spec:
+            self.scorer_worker.execute_model()
+
+        num_steps = num_lookahead_slots if isinstance(self.proposer_worker,
+                                                      MultiStepWorker) else 1
+        for _ in range(max(num_steps, 1)):
             self.proposer_worker.execute_model()
 
-        self.scorer_worker.execute_model()
+        if not no_spec:
+            self.scorer_worker.execute_model()
+
         return True
 
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")

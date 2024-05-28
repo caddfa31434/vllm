@@ -222,6 +222,7 @@ class ModelRunner:
     def _prepare_model_input(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
+        prepare_extra_inputs: bool = True,
     ) -> ModelInput:
         """Prepare the model input based on a given sequence group.
 
@@ -272,7 +273,8 @@ class ModelRunner:
         # paged_kv_last_page_len is the length of the last page of each request
         paged_kv_last_page_len: List[int] = []
 
-        extra_inputs: Optional[List[ExtraTensorData]] = []
+        extra_inputs: Optional[
+            List[ExtraTensorData]] = [] if prepare_extra_inputs else None
 
         if len(seq_group_metadata_list) == 0:
             return ModelInput.empty(self.device)
@@ -659,6 +661,7 @@ class ModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+        extra_inputs: Optional[ExtraTensorData] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor,
                Optional[ExtraTensorData]]:
@@ -678,8 +681,11 @@ class ModelRunner:
                 num_prefill_tokens,
                 num_decode_tokens,
                 num_prefills,
-                extra_inputs,
-            ) = self._prepare_model_input(seq_group_metadata_list)
+                prepared_extra_inputs,
+            ) = self._prepare_model_input(
+                seq_group_metadata_list,
+                prepare_extra_inputs=(extra_inputs is None)
+                and self.model_config.extra_inputs)
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
                 self.pin_memory)
@@ -701,8 +707,14 @@ class ModelRunner:
             if attn_metadata:
                 metadata_dict.update(attn_metadata.asdict_zerocopy())
 
+            if extra_inputs is None:
+                extra_inputs = prepared_extra_inputs
+
             if extra_inputs:
-                metadata_dict.update(extra_inputs.asdict())
+                metadata_dict.update({
+                    k: extra_inputs[k]
+                    for k in self.model_config.extra_inputs
+                })
 
             broadcast_tensor_dict(metadata_dict, src=0)
         else:
@@ -749,13 +761,9 @@ class ModelRunner:
         extra_outputs: Optional[Set[str]] = None,
     ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
-         lora_requests, lora_mapping, multi_modal_input, prepared_extra_inputs
-         ) = self.prepare_input_tensors(seq_group_metadata_list)
-
-        assert extra_inputs is None or prepared_extra_inputs is None
-
-        if extra_inputs is None:
-            extra_inputs = prepared_extra_inputs
+         lora_requests, lora_mapping, multi_modal_input,
+         extra_inputs) = self.prepare_input_tensors(seq_group_metadata_list,
+                                                    extra_inputs)
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
