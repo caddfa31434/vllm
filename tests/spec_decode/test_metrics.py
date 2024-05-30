@@ -18,6 +18,7 @@ def test_initial_call_returns_none():
                                                   dtype=torch.long,
                                                   device='cuda')
     rej_sampler.num_draft_tokens = 0
+    rej_sampler.num_steps = 0
 
     collector = AsyncMetricsCollector(rej_sampler)
     collector.init_gpu_tensors(rank=0)
@@ -36,6 +37,7 @@ def test_second_call_returns_metrics():
                                                   dtype=torch.long,
                                                   device='cuda')
     rej_sampler.num_draft_tokens = 0
+    rej_sampler.num_steps = 0
 
     collect_interval_s = 5.0
     timer = MagicMock()
@@ -64,6 +66,7 @@ def test_nonzero_rank_noop(rank):
                                                   dtype=torch.long,
                                                   device='cuda')
     rej_sampler.num_draft_tokens = 0
+    rej_sampler.num_steps = 0
 
     collector = AsyncMetricsCollector(rej_sampler)
     collector.init_gpu_tensors(rank=rank)
@@ -83,6 +86,7 @@ def test_noop_until_time():
                                                   dtype=torch.long,
                                                   device='cuda')
     rej_sampler.num_draft_tokens = 0
+    rej_sampler.num_steps = 0
 
     collect_interval_s = 5.0
     timer = MagicMock()
@@ -113,10 +117,12 @@ def test_initial_metrics_has_correct_values(has_data: bool):
         num_accepted_tokens = 103
         num_emitted_tokens = 104
         num_draft_tokens = 105
+        num_steps = 104
     else:
         num_accepted_tokens = 0
         num_emitted_tokens = 0
         num_draft_tokens = 0
+        num_steps = 0
     k = 5
 
     max_num_emitted_tokens = AsyncMetricsCollector.get_max_num_emitted_tokens(
@@ -130,6 +136,7 @@ def test_initial_metrics_has_correct_values(has_data: bool):
                                                   dtype=torch.long,
                                                   device='cuda')
     rej_sampler.num_draft_tokens = num_draft_tokens
+    rej_sampler.num_steps = num_steps
 
     collect_interval_s = 5.0
     timer = MagicMock()
@@ -154,6 +161,9 @@ def test_initial_metrics_has_correct_values(has_data: bool):
                 num_draft_tokens)
         assert (metrics.system_efficiency == num_emitted_tokens /
                 max_num_emitted_tokens)
+        assert (metrics.tokens_emitted_per_step == num_emitted_tokens /
+                num_steps)
     else:
         assert math.isnan(metrics.draft_acceptance_rate)
         assert math.isnan(metrics.system_efficiency)
+        assert math.isnan(metrics.tokens_emitted_per_step)
