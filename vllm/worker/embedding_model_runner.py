@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import torch
 
@@ -92,7 +92,7 @@ class EmbeddingModelRunner(ModelRunner):
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-        extra_inputs: Optional[TensorData] = None,
+        extra_inputs: Union[TensorData, Dict[int, TensorData], None] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, PoolingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor,
                Optional[TensorData]]:
@@ -112,9 +112,7 @@ class EmbeddingModelRunner(ModelRunner):
                 num_prefill_tokens,
                 num_decode_tokens,
                 num_prefills,
-                _,
-            ) = self._prepare_model_input(seq_group_metadata_list,
-                                          prepare_extra_inputs=False)
+            ) = self._prepare_model_input(seq_group_metadata_list)
             # Prepare PoolingMetadata
             pooling_metadata = self._prepare_pooling(seq_group_metadata_list,
                                                      seq_lens)

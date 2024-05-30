@@ -272,10 +272,8 @@ class Worker(WorkerBase):
         output = self.model_runner.execute_model(
             seq_group_metadata_list,
             self.gpu_cache,
-            extra_inputs=None
-            if execute_model_req is None else execute_model_req.extra_inputs,
-            extra_outputs=None
-            if execute_model_req is None else execute_model_req.extra_outputs)
+            extra_inputs=execute_model_req.extra_inputs,
+            extra_outputs=execute_model_req.extra_outputs)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.

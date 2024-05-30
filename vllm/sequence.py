@@ -208,7 +208,6 @@ class SequenceData:
         self,
         prompt_token_ids: List[int],
         output_token_ids: Optional[List[int]] = None,
-        tensor_data: Optional[TensorData] = None,
     ) -> None:
         if output_token_ids is None:
             output_token_ids = []
@@ -216,19 +215,14 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self._prompt_token_ids_tuple: Tuple[int, ...] = tuple(prompt_token_ids)
         self.output_token_ids = output_token_ids
-        self.tensor_data = TensorData() if tensor_data is None else tensor_data
         self.cumulative_logprob = 0.0
         # The number of tokens that are computed (that run against the model).
         self._num_computed_tokens = 0
         self._stage: SequenceStage = SequenceStage.PREFILL
 
-    def append_token_id(self,
-                        token_id: int,
-                        logprob: float,
-                        tensor_data: Optional[TensorData] = None) -> None:
+    def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
-        self.tensor_data = TensorData() if tensor_data is None else tensor_data
 
     def get_len(self) -> int:
         return len(self.output_token_ids) + len(self.prompt_token_ids)
@@ -300,8 +294,7 @@ class SequenceData:
         return (f"SequenceData("
                 f"prompt_token_ids={self.prompt_token_ids}, "
                 f"output_token_ids={self.output_token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob}, "
-                f"extra_tensor_data={self.tensor_data})")
+                f"cumulative_logprob={self.cumulative_logprob})")
 
 
 class Sequence:
@@ -411,13 +404,11 @@ class Sequence:
         self,
         token_id: int,
         logprobs: Dict[int, Logprob],
-        tensor_data: Optional[TensorData] = None,
     ) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
-        self.data.append_token_id(token_id, logprobs[token_id].logprob,
-                                  tensor_data)
+        self.data.append_token_id(token_id, logprobs[token_id].logprob)
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -814,19 +805,15 @@ class SequenceOutput:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, Logprob],
-        extra_tensor_data: Optional[TensorData] = None,
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
-        self.extra_tensor_data = TensorData(
-        ) if extra_tensor_data is None else extra_tensor_data
 
     def __repr__(self) -> str:
         return (f"SequenceOutput(parent_seq_id={self.parent_seq_id}, "
                 f"output_token={self.output_token}, "
-                f"logprobs={self.logprobs}, "
-                f"extra_tensor_data={self.extra_tensor_data})")
+                f"logprobs={self.logprobs})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceOutput):
@@ -908,8 +895,13 @@ class SamplerOutput:
     # On-device tensor containing the logprobs of each token.
     logprobs: Optional["torch.Tensor"] = None
 
-    # On-device tensors containing extra output data.
-    extra_tensor_data: TensorData = TensorData()
+    # On-device tensors containing extra output data. This should
+    # be a mapping from seq_id -> TensorData.
+    extra_tensors: Dict[int, TensorData] = field(default_factory=dict)
+
+    # On-device tensors containing extra output data. This is the raw
+    # version of above data, useful to avoid redundant rearrangement.
+    raw_extra_tensors: TensorData = field(default_factory=TensorData)
 
     # On-device tensor containing the sampled token ids.
     sampled_token_ids: Optional["torch.Tensor"] = None
@@ -941,8 +933,7 @@ class SamplerOutput:
             f"SamplerOutput(outputs={self.outputs}, "
             f"sampled_token_probs={sampled_token_probs_repr}, "
             f"sampled_token_ids={sampled_token_ids_repr}, "
-            f"spec_decode_worker_metrics={self.spec_decode_worker_metrics}, "
-            f"extra_tensor_data={self.extra_tensor_data})")
+            f"spec_decode_worker_metrics={self.spec_decode_worker_metrics})")
 
 
 @dataclass
@@ -984,7 +975,7 @@ class ExecuteModelRequest:
     # Extra outputs to return from the model
     extra_outputs: Set[str] = field(default_factory=set)
     # Extra inputs to pass to model
-    extra_inputs: Optional[TensorData] = None
+    extra_inputs: Union[TensorData, Dict[int, TensorData]] = TensorData()
 
     def clone(
         self, seq_group_metadata_list: List[SequenceGroupMetadata]
@@ -998,4 +989,5 @@ class ExecuteModelRequest:
             num_lookahead_slots=self.num_lookahead_slots,
             running_queue_size=self.running_queue_size,
             extra_outputs=self.extra_outputs,
+            extra_inputs=self.extra_inputs,
         )

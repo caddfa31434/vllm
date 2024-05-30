@@ -378,14 +378,14 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         ) = sampler_output.logprobs.split(split_sizes)
 
         spec_extra_output_data, no_spec_extra_output_data = sampler_output\
-                                                                .extra_tensor_data\
+                                                                .raw_extra_tensors\
                                                                 .split(split_sizes)
 
         # Convert scores to tensors.
         sampler_output.sampled_token_probs = spec_probs
         sampler_output.sampled_token_ids = spec_sampled_tokens
         sampler_output.logprobs = spec_logprobs
-        sampler_output.extra_tensor_data = spec_extra_output_data
+        sampler_output.raw_extra_tensors = spec_extra_output_data
         (target_token_ids, target_probs, target_logprobs,
          target_extra_output_data) = sampler_output_to_torch([sampler_output],
                                                              True)
@@ -394,7 +394,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         sampler_output.sampled_token_probs = non_spec_probs
         sampler_output.sampled_token_ids = non_spec_sampled_tokens
         sampler_output.logprobs = non_spec_logprobs
-        sampler_output.extra_tensor_data = no_spec_extra_output_data
+        sampler_output.raw_extra_tensors = no_spec_extra_output_data
         (non_spec_target_token_ids, non_spec_target_probs,
          non_spec_target_logprobs,
          non_spec_target_extra_output_data) = sampler_output_to_torch(

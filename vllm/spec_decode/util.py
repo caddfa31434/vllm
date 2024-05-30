@@ -68,7 +68,6 @@ def create_sequence_group_output(
     seq_id: SeqId,
     topk_token_ids: List[int],
     topk_logprobs: List[float],
-    extra_tensor_data: TensorData,
 ) -> SequenceGroupOutput:
     """Create a SequenceGroupOutput given the sampling results.
 
@@ -100,8 +99,7 @@ def create_sequence_group_output(
         samples=[
             SequenceOutput(parent_seq_id=seq_id,
                            output_token=token_id,
-                           logprobs=logprobs,
-                           extra_tensor_data=extra_tensor_data)
+                           logprobs=logprobs)
         ],
         # TODO add prompt logprobs support.
         prompt_logprobs=None,
@@ -184,7 +182,7 @@ def sampler_output_to_torch(
         sampled_token_ids = sampled_token_ids.transpose(0, 1)
 
     sampled_extra_output_data = TensorData.stack([
-        sampler_output.extra_tensor_data
+        sampler_output.raw_extra_tensors
         for sampler_output in sampler_output_list
     ])
     if sampler_transposed:

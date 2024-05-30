@@ -159,6 +159,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Lazy initiazliation.
         self.scorer: SpeculativeScorer
 
+        # seq_id -> scorer_state (used to store things like hidden_states
+        # that may be required by proposer in the next decode step).
+        self.scorer_state: Dict[int, TensorData] = {}
+
     def init_device(self) -> None:
         """Initialize both scorer and proposer models.
         """
@@ -344,8 +348,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         assert len(sampler_output) == 1
         sampler_output = sampler_output[0]
 
+        execute_model_req.extra_inputs = sampler_output.raw_extra_tensors
+        self.scorer_state.update(sampler_output.extra_tensors)
+
         execute_model_req.extra_outputs.clear()
-        execute_model_req.extra_inputs = sampler_output.extra_tensor_data
 
         if not skip_proposer:
             self.proposer_worker.execute_model(execute_model_req)
@@ -410,8 +416,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         assert num_lookahead_slots == execute_model_req.num_lookahead_slots
 
         # Generate proposals using draft worker.
+        execute_model_req.extra_inputs = self.scorer_state
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
 
+        execute_model_req.extra_inputs = {}
         proposal_scores = self.scorer.score_proposals(
             execute_model_req,
             proposals,
@@ -509,6 +517,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         the same number of outputs.
         """
         batch_size, num_steps = accepted_token_ids.shape
+        last_accepted_step = ((accepted_token_ids != -1).sum(-1) - 1).tolist()
 
         # Organize input tensors by step instead of by sequence.
         target_logprobs_by_step = target_logprobs.transpose(0, 1)
@@ -568,12 +577,15 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
                         [sequence_index][:num_logprobs],
                         topk_logprobs=topk_logprobs_by_step[step_index]
                         [sequence_index][:num_logprobs],
-                        extra_tensor_data=extra_tensor_data.index(
-                            sequence_index, step_index),
                     ))
 
             sampler_output_list.append(
                 SamplerOutput(outputs=step_output_token_ids))
+
+        for sequence_index in range(batch_size):
+            self.scorer_state[
+                seq_ids[sequence_index]] = extra_tensor_data.index(
+                    sequence_index, last_accepted_step[sequence_index])
 
         maybe_rejsample_metrics = (
             self._metrics.maybe_collect_rejsample_metrics(k))
@@ -609,7 +621,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
     def get_cache_block_size_bytes(self):
         """Return the size of a cache block in bytes.
-        
+
         This function is only used to compose workers within a SpecDecodeWorker.
         We leave composing a SpecDecodeWorker within a SpecDecodeWorker
         undefined for now, although it could be implemented in the future.
