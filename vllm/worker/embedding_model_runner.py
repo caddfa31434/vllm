@@ -12,8 +12,8 @@ from vllm.lora.layers import LoRAMapping
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.pooling_metadata import PoolingMetadata
 from vllm.pooling_params import PoolingParams
-from vllm.sequence import (ExtraTensorData, PoolerOutput, SequenceData,
-                           SequenceGroupMetadata)
+from vllm.sequence import (PoolerOutput, SequenceData, SequenceGroupMetadata,
+                           TensorData)
 from vllm.worker.model_runner import ModelRunner
 
 logger = init_logger(__name__)
@@ -50,7 +50,7 @@ class EmbeddingModelRunner(ModelRunner):
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[torch.Tensor],
-        extra_inputs: Optional[ExtraTensorData] = None,
+        extra_inputs: Optional[TensorData] = None,
         extra_outputs: Optional[Set[str]] = None,
     ) -> Optional[PoolerOutput]:
         (input_tokens, input_positions, attn_metadata, pooling_metadata,
@@ -92,10 +92,10 @@ class EmbeddingModelRunner(ModelRunner):
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-        extra_inputs: Optional[ExtraTensorData] = None,
+        extra_inputs: Optional[TensorData] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, PoolingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor,
-               Optional[ExtraTensorData]]:
+               Optional[TensorData]]:
         if self.is_driver_worker:
             assert seq_group_metadata_list is not None
             # Prepare input tensors.

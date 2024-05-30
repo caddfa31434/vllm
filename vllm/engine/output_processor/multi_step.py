@@ -127,7 +127,7 @@ class MultiStepOutputProcessor(SequenceGroupOutputProcessor):
             seq.append_token_id(
                 token_id=output_token_id,
                 logprobs=output_logprob,
-                extra_tensor_data=output_extra_tensor_data,
+                tensor_data=output_extra_tensor_data,
             )
 
             new_char_count = 0

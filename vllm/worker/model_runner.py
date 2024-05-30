@@ -20,8 +20,8 @@ from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.model_loader import get_model
 from vllm.sampling_params import SamplingParams
-from vllm.sequence import (ExtraTensorData, MultiModalData, SamplerOutput,
-                           SequenceData, SequenceGroupMetadata)
+from vllm.sequence import (MultiModalData, SamplerOutput, SequenceData,
+                           SequenceGroupMetadata, TensorData)
 from vllm.utils import (CudaMemoryProfiler, get_kv_cache_torch_dtype, is_hip,
                         is_pin_memory_available, make_tensor_with_pad)
 
@@ -50,7 +50,7 @@ class ModelInput(NamedTuple):
     num_prefill_tokens: int
     num_decode_tokens: int
     num_prefills: int
-    extra_inputs: Optional[ExtraTensorData]
+    extra_inputs: TensorData
 
     @classmethod
     def empty(cls, device):
@@ -67,7 +67,7 @@ class ModelInput(NamedTuple):
             num_prefill_tokens=0,
             num_decode_tokens=0,
             num_prefills=0,
-            extra_inputs=None,
+            extra_inputs=TensorData(),
         )
 
 
@@ -273,8 +273,7 @@ class ModelRunner:
         # paged_kv_last_page_len is the length of the last page of each request
         paged_kv_last_page_len: List[int] = []
 
-        extra_inputs: Optional[
-            List[ExtraTensorData]] = [] if prepare_extra_inputs else None
+        extra_inputs: List[TensorData] = []
 
         if len(seq_group_metadata_list) == 0:
             return ModelInput.empty(self.device)
@@ -470,11 +469,10 @@ class ModelRunner:
                     slot = block_number * self.block_size + block_offset
                     slot_mapping.append(slot)
 
-                if seq_data.extra_tensor_data is None:
-                    extra_inputs = None
-
-                if extra_inputs is not None:
-                    extra_inputs.append(seq_data.extra_tensor_data)
+                if prepare_extra_inputs:
+                    extra_inputs.append(seq_data.tensor_data)
+                else:
+                    extra_inputs.append(TensorData())
 
         # vLLM uses cuda graph only for decoding requests.
         # See `capture_model` API for more details.
@@ -501,9 +499,8 @@ class ModelRunner:
                 seq_lens.append(1)
                 block_tables.append([])
                 lora_index_mapping.append(0)
-                if extra_inputs is not None:
-                    extra_inputs.append(
-                        ExtraTensorData.create_empty_like(extra_inputs[-1]))
+                extra_inputs.append(
+                    TensorData.create_empty_like(extra_inputs[-1]))
             batch_size = graph_batch_size
             num_decode_tokens = batch_size
 
@@ -577,8 +574,7 @@ class ModelRunner:
                                            dtype=torch.long,
                                            device=self.device)
 
-        extra_inputs_tensor = None if extra_inputs is None else \
-                              ExtraTensorData.stack(extra_inputs)
+        extra_inputs_tensor = TensorData.stack(extra_inputs)
 
         if self.attn_backend.get_name() == "flashinfer":
             if not hasattr(self, "flashinfer_workspace_buffer"):
@@ -661,10 +657,10 @@ class ModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-        extra_inputs: Optional[ExtraTensorData] = None,
+        extra_inputs: Optional[TensorData] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor,
-               Optional[ExtraTensorData]]:
+               Optional[TensorData]]:
         if self.is_driver_worker:
             assert seq_group_metadata_list is not None
             # Prepare input tensors.
@@ -710,11 +706,9 @@ class ModelRunner:
             if extra_inputs is None:
                 extra_inputs = prepared_extra_inputs
 
-            if extra_inputs:
-                metadata_dict.update({
-                    k: extra_inputs[k]
-                    for k in self.model_config.extra_inputs_spec
-                })
+            extra_inputs_dict = extra_inputs.asdict()
+            metadata_dict.update(extra_inputs_dict)
+            metadata_dict["extra_inputs_keys"] = set(extra_inputs_dict.keys())
 
             broadcast_tensor_dict(metadata_dict, src=0)
         else:
@@ -727,14 +721,11 @@ class ModelRunner:
             lora_requests = metadata_dict.pop("lora_requests")
             multi_modal_input = metadata_dict.pop("multi_modal_input")
 
-            extra_inputs = {
-                k: metadata_dict.pop(k)
-                for k in self.model_config.extra_inputs_spec
-            }
-            if not extra_inputs:
-                extra_inputs = None
-            else:
-                extra_inputs = ExtraTensorData(**extra_inputs)
+            extra_inputs = TensorData(
+                **{
+                    k: metadata_dict.pop(k)
+                    for k in metadata_dict.pop("extra_inputs_keys")
+                })
 
             if metadata_dict:
                 attn_metadata = self.attn_backend.make_metadata(
@@ -757,13 +748,15 @@ class ModelRunner:
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
         kv_caches: List[torch.Tensor],
-        extra_inputs: Optional[ExtraTensorData] = None,
+        extra_inputs: Optional[TensorData] = None,
         extra_outputs: Optional[Set[str]] = None,
     ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
          lora_requests, lora_mapping, multi_modal_input,
          extra_inputs) = self.prepare_input_tensors(seq_group_metadata_list,
                                                     extra_inputs)
+
+        assert isinstance(extra_inputs, TensorData)
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
@@ -785,20 +778,14 @@ class ModelRunner:
         if self.vision_language_config:
             execute_model_kwargs.update({"image_input": multi_modal_input})
 
-        if extra_inputs:
-            execute_model_kwargs.update(extra_inputs.asdict())
+        execute_model_kwargs.update(extra_inputs.asdict())
 
         execute_model_kwargs = {
             k: v
             for k, v in execute_model_kwargs.items() if k in self.model_inputs
         }
 
-        extra_tensor_data = ExtraTensorData()
-
         hidden_states = model_executable(**execute_model_kwargs)
-
-        if extra_outputs and "hidden_states" in extra_outputs:
-            extra_tensor_data["hidden_states"] = hidden_states
 
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
@@ -813,7 +800,12 @@ class ModelRunner:
             sampling_metadata=sampling_metadata,
         )
 
-        if extra_outputs:
+        if extra_outputs and output is not None:
+            extra_tensor_data = TensorData()
+
+            if "hidden_states" in extra_outputs:
+                extra_tensor_data["hidden_states"] = hidden_states
+
             sampled_extra_tensor_data = extra_tensor_data.index_select(
                 0, sampling_metadata.selected_token_indices)
 
@@ -824,14 +816,12 @@ class ModelRunner:
                     extra_tensor_data[k].masked_fill_(
                         (input_positions == 0).unsqueeze(-1), 0)
 
-                if output is not None:
-                    _move_extra_tensor_data_to_seq_outputs(
-                        output, sampled_extra_tensor_data, sampling_metadata)
+                _move_extra_tensor_data_to_seq_outputs(
+                    output, sampled_extra_tensor_data, sampling_metadata)
 
-                    output.extra_tensor_data = extra_tensor_data
+                output.extra_tensor_data = extra_tensor_data
             else:
-                if output is not None:
-                    output.extra_tensor_data = sampled_extra_tensor_data
+                output.extra_tensor_data = sampled_extra_tensor_data
 
         return output
 
@@ -1182,8 +1172,7 @@ def _is_block_tables_empty(block_tables: Union[None, Dict]):
 
 
 def _move_extra_tensor_data_to_seq_outputs(
-        sampler_output: SamplerOutput,
-        sampled_extra_tensor_data: ExtraTensorData,
+        sampler_output: SamplerOutput, sampled_extra_tensor_data: TensorData,
         sampling_metadata: SamplingMetadata):
 
     for seq_group_id, seq_group_outputs in enumerate(sampler_output.outputs):

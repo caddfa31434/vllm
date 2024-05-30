@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 
-from vllm.sequence import ExecuteModelRequest, ExtraTensorData
+from vllm.sequence import ExecuteModelRequest, TensorData
 
 
 @dataclass
@@ -48,7 +47,7 @@ class SpeculativeScores:
     token_ids: torch.Tensor
 
     # Extra data output by the model
-    extra_tensor_data: Optional[ExtraTensorData]
+    extra_tensor_data: TensorData
 
     def __repr__(self):
         return (f"SpeculativeScores("

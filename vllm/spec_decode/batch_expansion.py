@@ -1,10 +1,10 @@
 from itertools import chain, count
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, Tuple
 
 import torch
 
-from vllm.sequence import (ExecuteModelRequest, ExtraTensorData, SamplerOutput,
-                           SequenceData, SequenceGroupMetadata)
+from vllm.sequence import (ExecuteModelRequest, SamplerOutput, SequenceData,
+                           SequenceGroupMetadata, TensorData)
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.util import (get_all_seq_ids, nvtx_range,
@@ -142,11 +142,11 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                 num_scoring_tokens)
 
     def _contract_batch(
-        self, contracted_bs: int, target_sampler_output: List[SamplerOutput],
-        proposals: SpeculativeProposals, num_scoring_tokens: int,
-        non_spec_indices: List[int], spec_indices: List[int], k: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-               Optional[ExtraTensorData]]:
+            self, contracted_bs: int,
+            target_sampler_output: List[SamplerOutput],
+            proposals: SpeculativeProposals, num_scoring_tokens: int,
+            non_spec_indices: List[int], spec_indices: List[int], k: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, TensorData]:
         """Contract the expanded batch back into its original size.
         This maps the scores of speculative tokens back to their original
         sequences.
@@ -195,46 +195,42 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                                   device=self._device,
                                   dtype=torch.float32)
 
-        all_extra_output_data = None
-        if target_extra_output_data is not None:
-            for key in target_extra_output_data:
-                target_extra_output_data[key] = target_extra_output_data[
-                    key].squeeze().reshape(
-                        spec_expanded_bs, k + 1,
-                        target_extra_output_data[key].shape[-1])
+        for key in target_extra_output_data:
+            target_extra_output_data[key] = target_extra_output_data[
+                key].squeeze().reshape(spec_expanded_bs, k + 1,
+                                       target_extra_output_data[key].shape[-1])
 
-        if target_extra_output_data is not None:
-            all_extra_output_data = ExtraTensorData.create_empty_like(
+        if target_extra_output_data:
+            all_extra_output_data = TensorData.create_empty_like(
                 target_extra_output_data,
                 size=(contracted_bs, k + 1),
                 device=self._device)
-        elif non_spec_target_extra_output_data is not None:
-            all_extra_output_data = ExtraTensorData.create_empty_like(
+        elif non_spec_target_extra_output_data:
+            all_extra_output_data = TensorData.create_empty_like(
                 non_spec_target_extra_output_data,
                 size=(contracted_bs, k + 1),
                 device=self._device)
+        else:
+            all_extra_output_data = TensorData()
 
         if non_spec_indices:
             all_tokens[non_spec_indices, :1] = non_spec_target_token_ids
             all_probs[non_spec_indices, :1, :] = non_spec_target_probs
             all_logprobs[non_spec_indices, :1, :] = non_spec_target_logprobs
 
-            if all_extra_output_data and \
-                non_spec_target_extra_output_data is not None:
-                for k in all_extra_output_data:
-                    all_extra_output_data[k][
-                        non_spec_indices, :
-                        1, :] = non_spec_target_extra_output_data[k]
+            for k in all_extra_output_data:
+                all_extra_output_data[k][
+                    non_spec_indices, :
+                    1, :] = non_spec_target_extra_output_data[k]
 
         if spec_indices:
             all_tokens[spec_indices] = target_token_ids
             all_probs[spec_indices] = target_probs
             all_logprobs[spec_indices] = target_logprobs
 
-            if all_extra_output_data and target_extra_output_data is not None:
-                for k in all_extra_output_data:
-                    all_extra_output_data[k][
-                        spec_indices] = target_extra_output_data[k]
+            for k in all_extra_output_data:
+                all_extra_output_data[k][
+                    spec_indices] = target_extra_output_data[k]
 
         return all_tokens, all_probs, all_logprobs, all_extra_output_data
 
@@ -355,9 +351,8 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
 
     def _split_scoring_output(
         self, sampler_output: SamplerOutput, num_scoring_tokens: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-               Optional[ExtraTensorData], torch.Tensor, torch.Tensor,
-               torch.Tensor, Optional[ExtraTensorData]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, TensorData,
+               torch.Tensor, torch.Tensor, torch.Tensor, TensorData]:
         """Split the target model output into speculative and non-speculative
         output.
         """
@@ -382,12 +377,9 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             non_spec_logprobs,
         ) = sampler_output.logprobs.split(split_sizes)
 
-        if sampler_output.extra_tensor_data is None:
-            spec_extra_output_data, no_spec_extra_output_data = (None, None)
-        else:
-            spec_extra_output_data, no_spec_extra_output_data = sampler_output\
-                                                                    .extra_tensor_data\
-                                                                    .split(split_sizes)
+        spec_extra_output_data, no_spec_extra_output_data = sampler_output\
+                                                                .extra_tensor_data\
+                                                                .split(split_sizes)
 
         # Convert scores to tensors.
         sampler_output.sampled_token_probs = spec_probs

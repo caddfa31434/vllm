@@ -1,12 +1,12 @@
 from contextlib import contextmanager
 from itertools import chain
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 
-from vllm.sequence import (CompletionSequenceGroupOutput, ExtraTensorData,
-                           Logprob, SamplerOutput, SequenceGroupMetadata,
-                           SequenceGroupOutput, SequenceOutput)
+from vllm.sequence import (CompletionSequenceGroupOutput, Logprob,
+                           SamplerOutput, SequenceGroupMetadata,
+                           SequenceGroupOutput, SequenceOutput, TensorData)
 
 SeqId = int
 
@@ -68,7 +68,7 @@ def create_sequence_group_output(
     seq_id: SeqId,
     topk_token_ids: List[int],
     topk_logprobs: List[float],
-    extra_tensor_data: Optional[ExtraTensorData] = None,
+    extra_tensor_data: TensorData,
 ) -> SequenceGroupOutput:
     """Create a SequenceGroupOutput given the sampling results.
 
@@ -137,8 +137,7 @@ def split_batch_by_proposal_len(
 
 def sampler_output_to_torch(
     sampler_output_list: List[SamplerOutput], sampler_transposed: bool
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-           Optional[ExtraTensorData]]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, TensorData]:
     """Utility function which converts a list of SamplerOutput to tensors.
 
         sampler_transposed here is used as the indicator for whether
@@ -184,11 +183,11 @@ def sampler_output_to_torch(
     if sampler_transposed:
         sampled_token_ids = sampled_token_ids.transpose(0, 1)
 
-    sampled_extra_output_data = ExtraTensorData.stack([
+    sampled_extra_output_data = TensorData.stack([
         sampler_output.extra_tensor_data
         for sampler_output in sampler_output_list
     ])
-    if sampler_transposed and sampled_extra_output_data is not None:
+    if sampler_transposed:
         for k in sampled_extra_output_data:
             sampled_extra_output_data[k] = sampled_extra_output_data[
                 k].transpose(0, 1)

@@ -6,8 +6,8 @@ import torch
 from vllm.distributed.communication_op import broadcast_tensor_dict
 from vllm.logger import init_logger
 from vllm.model_executor.layers.rejection_sampler import RejectionSampler
-from vllm.sequence import (ExecuteModelRequest, ExtraTensorData, SamplerOutput,
-                           SequenceGroupMetadata)
+from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
+                           SequenceGroupMetadata, TensorData)
 from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
@@ -501,7 +501,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         accepted_token_ids: torch.Tensor,  # shape: [batch_size, k+1]
         target_logprobs: torch.Tensor,  # shape: [batch_size, k+1, vocab_size]
         k: int,
-        extra_tensor_data: Optional[ExtraTensorData] = None,
+        extra_tensor_data: TensorData,
     ) -> List[SamplerOutput]:
         """Given the accepted token ids, create a list of SamplerOutput.
 
@@ -568,8 +568,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
                         [sequence_index][:num_logprobs],
                         topk_logprobs=topk_logprobs_by_step[step_index]
                         [sequence_index][:num_logprobs],
-                        extra_tensor_data=None if
-                        extra_tensor_data is None else extra_tensor_data.index(
+                        extra_tensor_data=extra_tensor_data.index(
                             sequence_index, step_index),
                     ))
 
