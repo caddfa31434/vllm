@@ -955,8 +955,6 @@ class ExecuteModelRequest:
     extra_outputs: Set[str] = field(default_factory=set)
     # Extra inputs to pass to model
     extra_inputs: Optional[ExtraTensorData] = None
-    # Don't speculate if true
-    dont_speculate: bool = False
 
     def clone(
         self, seq_group_metadata_list: List[SequenceGroupMetadata]
@@ -970,5 +968,4 @@ class ExecuteModelRequest:
             num_lookahead_slots=self.num_lookahead_slots,
             running_queue_size=self.running_queue_size,
             extra_outputs=self.extra_outputs,
-            dont_speculate=self.dont_speculate,
         )
