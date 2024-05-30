@@ -3,6 +3,9 @@ from typing import Union
 
 from transformers import PretrainedConfig
 
+from vllm.transformers_utils.configs.inputs_spec import (ExtraModelInputsSpec,
+                                                         ModelInputSpec)
+
 
 class MedusaConfig(PretrainedConfig):
     model_type = "medusa"
@@ -25,6 +28,10 @@ class MedusaConfig(PretrainedConfig):
         self.max_seq_len = int(2**20)
         if "architectures" not in kwargs:
             kwargs["architectures"] = ["MedusaModel"]
+
+        self.extra_inputs_spec: ExtraModelInputsSpec = {
+            "hidden_states": ModelInputSpec(shape=(self.hidden_size, ))
+        }
 
         super().__init__(**kwargs)
 

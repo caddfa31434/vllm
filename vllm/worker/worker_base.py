@@ -77,8 +77,8 @@ class WorkerBase(ABC):
     @property
     def extra_inputs(self) -> Set[str]:
         if hasattr(self, "model_config") and hasattr(self.model_config,
-                                                     "extra_inputs"):
-            return set(self.model_config.extra_inputs.keys())
+                                                     "extra_inputs_spec"):
+            return set(self.model_config.extra_inputs_spec.keys())
         return set()
 
 

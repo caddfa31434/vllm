@@ -1,8 +1,7 @@
 import enum
 import json
 from dataclasses import dataclass, field, fields
-from typing import (TYPE_CHECKING, ClassVar, Dict, List, Optional, Set, Tuple,
-                    Union)
+from typing import TYPE_CHECKING, ClassVar, List, Optional, Tuple, Union
 
 import torch
 from transformers import PretrainedConfig
@@ -11,6 +10,8 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.model_executor.models import ModelRegistry
 from vllm.transformers_utils.config import get_config, get_hf_text_config
+from vllm.transformers_utils.configs.inputs_spec import (ExtraModelInputsSpec,
+                                                         ModelInputSpec)
 from vllm.utils import get_cpu_memory, is_cpu, is_hip, is_neuron
 
 if TYPE_CHECKING:
@@ -29,8 +30,8 @@ class ModelConfig:
 
     Args:
         model: Name or path of the huggingface model to use.
-            It is also used as the content for `model_name` tag in metrics 
-            output when `served_model_name` is not specified. 
+            It is also used as the content for `model_name` tag in metrics
+            output when `served_model_name` is not specified.
         tokenizer: Name or path of the huggingface tokenizer to use.
         tokenizer_mode: Tokenizer mode. "auto" will use the fast tokenizer if
             available, and "slow" will always use the slow tokenizer.
@@ -77,8 +78,8 @@ class ModelConfig:
         skip_tokenizer_init: If true, skip initialization of tokenizer and
             detokenizer.
         served_model_name: The model name used in metrics tag `model_name`,
-            matches the model name exposed via the APIs. If multiple model 
-            names provided, the first name will be used. If not specified, 
+            matches the model name exposed via the APIs. If multiple model
+            names provided, the first name will be used. If not specified,
             the model name will be the same as `model`.
     """
 
@@ -104,7 +105,6 @@ class ModelConfig:
         disable_sliding_window: bool = False,
         skip_tokenizer_init: bool = False,
         served_model_name: Optional[Union[str, List[str]]] = None,
-        extra_inputs: Optional[Set[str]] = None,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -139,18 +139,18 @@ class ModelConfig:
             sliding_window_len=self.get_hf_config_sliding_window())
         self.served_model_name = get_served_model_name(model,
                                                        served_model_name)
-
-        self.extra_inputs: Dict[str, Tuple[Tuple[int],
-                                           Optional[torch.dtype]]] = {}
-        if extra_inputs and "hidden_states" in extra_inputs:
-            self.extra_inputs["hidden_states"] = ((
-                self.hf_config.hidden_size, ), None)
-
         if not self.skip_tokenizer_init:
             self._verify_tokenizer_mode()
         self._verify_embedding_mode()
         self._verify_quantization()
         self._verify_cuda_graph()
+
+        self.extra_inputs_spec: ExtraModelInputsSpec = getattr(
+            self.hf_config, "extra_inputs_spec", {})
+        for input_name, input_spec in self.extra_inputs_spec.items():
+            if input_spec.dtype is None:
+                self.extra_inputs_spec[input_name] = ModelInputSpec(
+                    input_spec.shape, self.dtype)
 
     def _verify_tokenizer_mode(self) -> None:
         tokenizer_mode = self.tokenizer_mode.lower()
@@ -749,7 +749,6 @@ class SpeculativeConfig:
         target_parallel_config: ParallelConfig,
         target_dtype: str,
         speculative_model: Optional[str],
-        extra_inputs: Set[str],
         num_speculative_tokens: Optional[int],
         speculative_max_model_len: Optional[int],
         enable_chunked_prefill: bool,
@@ -865,7 +864,6 @@ class SpeculativeConfig:
                 max_seq_len_to_capture=target_model_config.
                 max_seq_len_to_capture,
                 max_logprobs=target_model_config.max_logprobs,
-                extra_inputs=extra_inputs,
             )
 
             if num_speculative_tokens is not None:
@@ -1268,10 +1266,10 @@ def _get_and_verify_max_len(
 def get_served_model_name(model: str,
                           served_model_name: Optional[Union[str, List[str]]]):
     """
-    If the input is a non-empty list, the first model_name in 
-    `served_model_name` is taken. 
-    If the input is a non-empty string, it is used directly. 
-    For cases where the input is either an empty string or an 
+    If the input is a non-empty list, the first model_name in
+    `served_model_name` is taken.
+    If the input is a non-empty string, it is used directly.
+    For cases where the input is either an empty string or an
     empty list, the fallback is to use `self.model`.
     """
     if not served_model_name:

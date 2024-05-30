@@ -685,7 +685,7 @@ class ModelRunner:
             ) = self._prepare_model_input(
                 seq_group_metadata_list,
                 prepare_extra_inputs=(extra_inputs is None)
-                and self.model_config.extra_inputs)
+                and self.model_config.extra_inputs_spec)
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
                 self.pin_memory)
@@ -713,7 +713,7 @@ class ModelRunner:
             if extra_inputs:
                 metadata_dict.update({
                     k: extra_inputs[k]
-                    for k in self.model_config.extra_inputs
+                    for k in self.model_config.extra_inputs_spec
                 })
 
             broadcast_tensor_dict(metadata_dict, src=0)
@@ -729,7 +729,7 @@ class ModelRunner:
 
             extra_inputs = {
                 k: metadata_dict.pop(k)
-                for k in self.model_config.extra_inputs
+                for k in self.model_config.extra_inputs_spec
             }
             if not extra_inputs:
                 extra_inputs = None
@@ -969,7 +969,8 @@ class ModelRunner:
                 max_batch_size,
                 *shape,
                 dtype=kv_caches[0].dtype if dtype is None else dtype).cuda()
-            for k, (shape, dtype) in self.model_config.extra_inputs.items()
+            for k, (shape,
+                    dtype) in self.model_config.extra_inputs_spec.items()
         }
 
         graph_batch_size = _get_graph_batch_size(
