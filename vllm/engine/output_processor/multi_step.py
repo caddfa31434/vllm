@@ -128,7 +128,6 @@ class MultiStepOutputProcessor(SequenceGroupOutputProcessor):
                 token_id=output_token_id,
                 logprobs=output_logprob,
                 extra_tensor_data=output_extra_tensor_data,
-                update_num_steps=False,
             )
 
             new_char_count = 0
@@ -144,8 +143,6 @@ class MultiStepOutputProcessor(SequenceGroupOutputProcessor):
             )
             if seq.is_finished():
                 break
-
-        seq.num_steps += 1
 
         if seq.is_finished():
             self.scheduler.free_seq(seq)

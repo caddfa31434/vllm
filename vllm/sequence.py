@@ -349,7 +349,6 @@ class Sequence:
         self.read_offset = 0
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
-        self.num_steps: int = 0
 
     @property
     def lora_int_id(self) -> int:
@@ -406,15 +405,12 @@ class Sequence:
         token_id: int,
         logprobs: Dict[int, Logprob],
         extra_tensor_data: Optional[ExtraTensorData] = None,
-        update_num_steps: bool = True,
     ) -> None:
         assert token_id in logprobs
         self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id].logprob,
                                   extra_tensor_data)
-        if update_num_steps:
-            self.num_steps += 1
 
     def get_len(self) -> int:
         return self.data.get_len()

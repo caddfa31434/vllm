@@ -41,6 +41,9 @@ class SpecDecodeWorkerMetrics:
     # The number of speculative tokens per sequence.
     num_spec_tokens: int
 
+    # The number tokens emitted per decoding step
+    tokens_emitted_per_step: int
+
 
 Timer = Callable[[], float]
 
@@ -70,6 +73,7 @@ class AsyncMetricsCollector:
         self._aggregate_num_emitted_tokens = torch.tensor(
             0, dtype=torch.long, device="cpu", pin_memory=pin_memory)
         self._aggregate_num_draft_tokens = 0
+        self._aggregate_num_steps = 0
 
         self._rejsample_metrics_collect_interval_s = collect_interval_s
         self._last_metrics_collect_time = self._timer()
@@ -124,6 +128,7 @@ class AsyncMetricsCollector:
             # required.
             self._aggregate_num_draft_tokens = (
                 self._rejection_sampler.num_draft_tokens)
+            self._aggregate_num_steps = self._rejection_sampler.num_steps
 
         aggregate_metrics_ready = torch.cuda.Event()
         aggregate_metrics_ready.record(self._copy_stream)
@@ -146,6 +151,7 @@ class AsyncMetricsCollector:
         accepted_tokens = self._aggregate_num_accepted_tokens.item()
         emitted_tokens = self._aggregate_num_emitted_tokens.item()
         draft_tokens = self._aggregate_num_draft_tokens
+        num_steps = self._aggregate_num_steps
 
         max_num_emitted_tokens = self.get_max_num_emitted_tokens(
             draft_tokens, k)
@@ -160,6 +166,11 @@ class AsyncMetricsCollector:
         else:
             system_efficiency = float("nan")
 
+        if num_steps > 0:
+            tokens_emitted_per_step = emitted_tokens / num_steps
+        else:
+            tokens_emitted_per_step = float("nan")
+
         return SpecDecodeWorkerMetrics(
             num_spec_tokens=k,
             draft_acceptance_rate=draft_acceptance_rate,
@@ -167,6 +178,7 @@ class AsyncMetricsCollector:
             accepted_tokens=accepted_tokens,
             draft_tokens=draft_tokens,
             emitted_tokens=emitted_tokens,
+            tokens_emitted_per_step=tokens_emitted_per_step,
         )
 
     @staticmethod

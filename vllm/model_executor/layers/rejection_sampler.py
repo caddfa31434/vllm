@@ -37,6 +37,7 @@ class RejectionSampler(nn.Module):
         self.num_accepted_tokens: Optional[torch.Tensor] = None
         self.num_emitted_tokens: Optional[torch.Tensor] = None
         self.num_draft_tokens: int = 0
+        self.num_steps: int = 0
 
     def init_gpu_tensors(self, rank: int) -> None:
         assert self.num_accepted_tokens is None
@@ -329,6 +330,7 @@ class RejectionSampler(nn.Module):
         self.num_accepted_tokens += accepted.sum()
         self.num_emitted_tokens += (output_with_bonus_tokens != -1).sum()
         self.num_draft_tokens += batch_size * k
+        self.num_steps += 1
 
         return output_with_bonus_tokens
 
