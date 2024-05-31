@@ -582,10 +582,11 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             sampler_output_list.append(
                 SamplerOutput(outputs=step_output_token_ids))
 
-        for sequence_index in range(batch_size):
-            self.scorer_state[
-                seq_ids[sequence_index]] = extra_tensor_data.index(
-                    sequence_index, last_accepted_step[sequence_index])
+        if extra_tensor_data:
+            for sequence_index in range(batch_size):
+                self.scorer_state[
+                    seq_ids[sequence_index]] = extra_tensor_data.index(
+                        sequence_index, last_accepted_step[sequence_index])
 
         maybe_rejsample_metrics = (
             self._metrics.maybe_collect_rejsample_metrics(k))

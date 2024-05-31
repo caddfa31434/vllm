@@ -663,13 +663,12 @@ class ModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-        extra_inputs: Union[TensorData, Dict[int, TensorData], None],
+        extra_inputs: Union[TensorData, Dict[int, TensorData], None] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor,
                Optional[TensorData]]:
         if self.is_driver_worker:
-            assert seq_group_metadata_list is not None \
-                and extra_inputs is not None
+            assert seq_group_metadata_list is not None
             # Prepare input tensors.
             (
                 input_tokens,
@@ -691,8 +690,9 @@ class ModelRunner:
                     extra_inputs = self._prepare_extra_model_input(
                         seq_group_metadata_list, extra_inputs,
                         input_tokens.size(0))
-                else:
-                    extra_inputs = TensorData()
+            
+            if not extra_inputs:
+                extra_inputs = TensorData()
 
             sampling_metadata = SamplingMetadata.prepare(
                 seq_group_metadata_list, seq_lens, query_lens, self.device,
@@ -826,7 +826,7 @@ class ModelRunner:
                         (input_positions == 0).unsqueeze(-1), 0)
 
                 sampled_extra_tensor_data_dict = \
-                    _move_extra_tensor_data_to_seq_outputs(
+                    _rearrange_extra_tensors(
                     output, sampled_extra_tensor_data, sampling_metadata)
 
                 output.extra_tensors = sampled_extra_tensor_data_dict
@@ -967,10 +967,7 @@ class ModelRunner:
         block_tables = torch.from_numpy(self.graph_block_tables).cuda()
 
         extra_inputs = {
-            k: torch.randn(
-                max_batch_size,
-                *shape,
-                dtype=kv_caches[0].dtype if dtype is None else dtype).cuda()
+            k: torch.randn(max_batch_size, *shape, dtype=dtype).cuda()
             for k, (shape,
                     dtype) in self.model_config.extra_inputs_spec.items()
         }
@@ -1183,8 +1180,7 @@ def _is_block_tables_empty(block_tables: Union[None, Dict]):
     return False
 
 
-def _move_extra_tensor_data_to_seq_outputs(
-        sampler_output: SamplerOutput, sampled_extra_tensor_data: TensorData,
+def _rearrange_extra_tensors(sampler_output: SamplerOutput, sampled_extra_tensor_data: TensorData,
         sampling_metadata: SamplingMetadata):
 
     sampled_extra_tensor_data_dict: Dict[int, TensorData] = {}
@@ -1194,7 +1190,6 @@ def _move_extra_tensor_data_to_seq_outputs(
         for idx, seq_output in zip(seq_group.sample_indices,
                                    seq_group_outputs.samples):
             sampled_extra_tensor_data_dict[
-                seq_output.parent_seq_id] = sampled_extra_tensor_data.index(
-                    idx)
+                seq_output.parent_seq_id] = sampled_extra_tensor_data.index(idx)
 
     return sampled_extra_tensor_data_dict
