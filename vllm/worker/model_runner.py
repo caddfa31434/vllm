@@ -685,13 +685,12 @@ class ModelRunner:
                 num_prefills,
             ) = self._prepare_model_input(seq_group_metadata_list)
 
-            if isinstance(extra_inputs, dict):
-                if extra_inputs:
+            if extra_inputs:
+                if isinstance(extra_inputs, dict):
                     extra_inputs = self._prepare_extra_model_input(
                         seq_group_metadata_list, extra_inputs,
                         input_tokens.size(0))
-            
-            if not extra_inputs:
+            else:
                 extra_inputs = TensorData()
 
             sampling_metadata = SamplingMetadata.prepare(
@@ -1180,8 +1179,9 @@ def _is_block_tables_empty(block_tables: Union[None, Dict]):
     return False
 
 
-def _rearrange_extra_tensors(sampler_output: SamplerOutput, sampled_extra_tensor_data: TensorData,
-        sampling_metadata: SamplingMetadata):
+def _rearrange_extra_tensors(sampler_output: SamplerOutput,
+                             sampled_extra_tensor_data: TensorData,
+                             sampling_metadata: SamplingMetadata):
 
     sampled_extra_tensor_data_dict: Dict[int, TensorData] = {}
 
@@ -1190,6 +1190,7 @@ def _rearrange_extra_tensors(sampler_output: SamplerOutput, sampled_extra_tensor
         for idx, seq_output in zip(seq_group.sample_indices,
                                    seq_group_outputs.samples):
             sampled_extra_tensor_data_dict[
-                seq_output.parent_seq_id] = sampled_extra_tensor_data.index(idx)
+                seq_output.parent_seq_id] = sampled_extra_tensor_data.index(
+                    idx)
 
     return sampled_extra_tensor_data_dict

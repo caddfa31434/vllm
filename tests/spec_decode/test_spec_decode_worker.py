@@ -7,7 +7,7 @@ import torch
 
 from vllm.model_executor.layers.rejection_sampler import RejectionSampler
 from vllm.model_executor.utils import set_random_seed
-from vllm.sequence import ExecuteModelRequest, SamplerOutput
+from vllm.sequence import ExecuteModelRequest, SamplerOutput, TensorData
 from vllm.spec_decode.interfaces import SpeculativeProposals
 from vllm.spec_decode.metrics import (AsyncMetricsCollector,
                                       SpecDecodeWorkerMetrics)
@@ -449,7 +449,10 @@ def test_k_equals_zero(k: int, batch_size: int):
     rejection_sampler.token_id_dtype = torch.int64
     metrics_collector = MagicMock(spec=AsyncMetricsCollector)
 
-    target_worker.execute_model.return_value = [MagicMock(spec=SamplerOutput)]
+    sampler_output = MagicMock(spec=SamplerOutput)
+    sampler_output.raw_extra_tensors = TensorData()
+    sampler_output.extra_tensors = {}
+    target_worker.execute_model.return_value = [sampler_output]
 
     draft_worker.device = 'cuda'
     target_worker.device = 'cuda'
@@ -490,7 +493,10 @@ def test_empty_input_batch(k: int, batch_size: int):
     rejection_sampler.token_id_dtype = torch.int64
     metrics_collector = MagicMock(spec=AsyncMetricsCollector)
 
-    target_worker.execute_model.return_value = [MagicMock(spec=SamplerOutput)]
+    sampler_output = MagicMock(spec=SamplerOutput)
+    sampler_output.raw_extra_tensors = TensorData()
+    sampler_output.extra_tensors = {}
+    target_worker.execute_model.return_value = [sampler_output]
 
     draft_worker.device = 'cuda'
     target_worker.device = 'cuda'
