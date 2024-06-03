@@ -72,7 +72,6 @@ class EngineArgs:
     device: str = 'auto'
     ray_workers_use_nsight: bool = False
     num_gpu_blocks_override: Optional[int] = None
-    num_lookahead_slots: int = 0
     model_loader_extra_config: Optional[dict] = None
 
     # Related to Vision-language models such as llava
@@ -87,6 +86,7 @@ class EngineArgs:
     # Speculative decoding configuration.
     speculative_model: Optional[str] = None
     num_speculative_tokens: Optional[int] = None
+    num_lookahead_slots: int = 0
     speculative_max_model_len: Optional[int] = None
     speculative_disable_by_batch_size: Optional[int] = None
     ngram_prompt_lookup_max: Optional[int] = None
@@ -616,6 +616,7 @@ class EngineArgs:
             target_dtype=self.dtype,
             speculative_model=self.speculative_model,
             num_speculative_tokens=self.num_speculative_tokens,
+            num_lookahead_slots=self.num_lookahead_slots,
             speculative_disable_by_batch_size=self.
             speculative_disable_by_batch_size,
             speculative_max_model_len=self.speculative_max_model_len,
