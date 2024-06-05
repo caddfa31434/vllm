@@ -59,6 +59,7 @@ class RejectionSampler(nn.Module):
     def forward(
         self,
         target_probs: torch.Tensor,
+        target_logprobs: torch.Tensor,
         bonus_token_ids: torch.Tensor,
         draft_probs: torch.Tensor,
         draft_token_ids: torch.Tensor,
@@ -77,19 +78,19 @@ class RejectionSampler(nn.Module):
         Args:
             target_probs: The probability distribution over token ids given
                 context according to the target model.
-            shape = [batch_size, num_speculative_tokens, vocab_size]
+            shape = [batch_size, num_candidate, num_speculative_tokens, vocab_size]
 
             bonus_token_ids: The "bonus" token ids that are accepted iff all
                 speculative tokens in a sequence are accepted.
-            shape = [batch_size, num_bonus_tokens]
+            shape = [batch_size, num_candidate, num_bonus_tokens]
 
             draft_probs: The probability distribution over token ids given
                 context according to the draft model.
-            shape = [batch_size, num_speculative_tokens, vocab_size]
+            shape = [batch_size, num_candidate, num_speculative_tokens, vocab_size]
 
             draft_token_ids: The token ids that were sampled from the draft
                 probabilities.
-            shape = [batch_size, num_speculative_tokens]
+            shape = [batch_size, num_candidate, num_speculative_tokens]
 
         Returns:
             output_token_ids: The token ids sampled via rejection sampling,
@@ -100,6 +101,7 @@ class RejectionSampler(nn.Module):
         # Only perform shape/dtype/device checking in strict mode, as it adds
         # overhead.
         if self._strict_mode:
+        # if True:
             self._raise_if_incorrect_shape(target_probs, bonus_token_ids,
                                            draft_probs, draft_token_ids)
             self._raise_if_incorrect_dtype(target_probs, bonus_token_ids,
@@ -127,35 +129,57 @@ class RejectionSampler(nn.Module):
 
     def _batch_modified_rejection_sampling(
             self,
-            target_probs: torch.Tensor,  # [batch_size, k, vocab_size]
-            draft_probs: torch.Tensor,  # [batch_size, k, vocab_size]
-            draft_token_ids: torch.Tensor,  # [batch_size, k]
+            target_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_token_ids: torch.Tensor,  # [batch_size, num_candidate, k]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Perform modified rejection sampling on each sequence.
 
         Returns:
             A tuple of two tensors:
             0: A bool tensor of which tokens in each sequence is accepted.
-                shape = [batch_size, k]
+                shape = [batch_size, num_candidate, k]
             1: Token ids sampled from a recovered distribution, to be used
                 when a token is rejected.
-                shape = [batch_size, k]
+                shape = [batch_size, num_candidate, k]
         """
+        if len(draft_probs.shape) == 3:
+            batch_size, k, vocab_size = draft_probs.shape
 
-        batch_size, k, vocab_size = draft_probs.shape
+            # shape [batch_size, k]
+            accepted = self._get_accepted(target_probs, draft_probs,
+                                        draft_token_ids)
 
-        # shape [batch_size, k]
-        accepted = self._get_accepted(target_probs, draft_probs,
-                                      draft_token_ids)
+            recovered_probs = self._get_recovered_probs(
+                target_probs, draft_probs).reshape(batch_size * k, vocab_size)
 
-        recovered_probs = self._get_recovered_probs(
-            target_probs, draft_probs).reshape(batch_size * k, vocab_size)
+            # NOTE: the recovered_probs are overwritten by this method.
+            recovered_token_ids = _multinomial(recovered_probs,
+                                            num_samples=1).reshape(
+                                                batch_size, k)
+            print(f"{accepted=}")
+            print(f"{draft_token_ids=}")
+            print(f"{recovered_token_ids=}")
+            return accepted, recovered_token_ids
+        elif len(draft_probs.shape) == 4:
+            batch_size, num_candidate, k, vocab_size = draft_probs.shape
 
-        # NOTE: the recovered_probs are overwritten by this method.
-        recovered_token_ids = _multinomial(recovered_probs,
-                                           num_samples=1).reshape(
-                                               batch_size, k)
-        return accepted, recovered_token_ids
+            # shape [batch_size, num_candidate, k]
+            accepted = self._get_accepted_v2(target_probs, draft_probs,
+                                        draft_token_ids)
+
+            recovered_probs = self._get_recovered_probs_v2(
+                target_probs, draft_probs).reshape(batch_size * num_candidate * k, vocab_size)
+
+            # NOTE: the recovered_probs are overwritten by this method.
+            recovered_token_ids = _multinomial(recovered_probs,
+                                            num_samples=1).reshape(
+                                                batch_size, num_candidate, k)
+                                            
+            print(f"{accepted=}")
+            print(f"{draft_token_ids=}")
+            print(f"{recovered_token_ids=}")
+            return accepted, recovered_token_ids
 
     def _get_accepted(
             self,
@@ -200,6 +224,59 @@ class RejectionSampler(nn.Module):
                                   k,
                                   dtype=self.probs_dtype,
                                   device=target_probs.device)
+        capped_ratio = torch.minimum(
+            selected_target_probs / selected_draft_probs,
+            torch.full((1, ), 1, device=target_probs.device))
+        accepted = uniform_rand < capped_ratio
+
+        return accepted
+
+    def _get_accepted_v2(
+            self,
+            target_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_token_ids: torch.Tensor,  # [batch_size,num_candidate, k]
+    ) -> torch.Tensor:
+        r"""Create bool matrix over the proposed draft tokens. If
+        True, then a token can be accepted, else it should be
+        rejected.
+
+        Given :math:`q(\hat{x}_{n+1}|x_1, \dots, x_n)`, the probability of
+        :math:`\hat{x}_{n+1}` given context :math:`x_1, \dots, x_n` according
+        to the target model, and :math:`p(\hat{x}_{n+1}|x_1, \dots, x_n)`, the
+        same conditional probability according to the draft model, the token
+        is accepted with probability:
+
+        .. math::
+            \min\left(1, \frac{q(\hat{x}_{n+1}|x_1, \dots, x_n)}
+                           {p(\hat{x}_{n+1}|x_1, \dots, x_n)}\right)
+
+        This implementation does not apply causality. When using the output,
+        if a token is rejected, subsequent tokens should not be used.
+
+        Returns a bool tensor of shape [batch_size, num_candidate, k] specifying which tokens
+        are accepted.
+        """
+        batch_size, num_candidate, k, _ = draft_probs.shape
+        batch_indices = torch.arange(batch_size,
+                                     device=target_probs.device)[:, None, None]
+        candidate_indices = torch.arange(num_candidate, device=target_probs.device)[:, None]
+        probs_indices = torch.arange(k, device=target_probs.device)
+
+        # shape [batch_size, num_candidate, k]
+        selected_draft_probs = draft_probs[batch_indices, candidate_indices, 
+                                           probs_indices, draft_token_ids]
+
+       # shape [batch_size, num_candidate, k]
+        selected_target_probs = target_probs[batch_indices, candidate_indices,
+                                             probs_indices, draft_token_ids]
+
+        uniform_rand = torch.rand(batch_size,
+                                  num_candidate,
+                                  k,
+                                  dtype=self.probs_dtype,
+                                  device=target_probs.device)
+
         capped_ratio = torch.minimum(
             selected_target_probs / selected_draft_probs,
             torch.full((1, ), 1, device=target_probs.device))
@@ -252,10 +329,59 @@ class RejectionSampler(nn.Module):
 
         # shape [batch_size, k, vocab_size]
         f = torch.clamp(difference, min=self._smallest_positive_value)
-
+        print(f"{f=}")
         # shape [batch_size, k, vocab_size]
         recovered_probs = f / torch.sum(f, dim=-1).reshape(-1, k, 1)
+        print(f"{recovered_probs=}")
+        return recovered_probs
 
+    def _get_recovered_probs_v2(
+            self,
+            target_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+    ) -> torch.Tensor:
+        r"""Create a probability distribution for each proposed token which can
+        be sampled if the proposed token is rejected.
+
+        When this routine is applied sequentially, the true distribution of the
+        target model is recovered (within hardware numerics).
+
+        The probability distribution used in this rejection case is constructed
+        as follows. Given :math:`q(x|x_1, \dots, x_n)`, the probability of
+        :math:`x` given context :math:`x_1, \dots, x_n` according to the target
+        model and :math:`p(x|x_1, \dots, x_n)`, the same conditional probability
+        according to the draft model:
+
+        .. math::
+            x_{n+1} \sim (q(x|x_1, \dots, x_n) - p(x|x_1, \dots, x_n))_+
+
+        where :math:`(f(x))_+` is defined as:
+
+        .. math::
+            (f(x))_+ = \frac{\max(0, f(x))}{\sum_x \max(0, f(x))}
+
+        See https://github.com/vllm-project/vllm/pull/2336 for a visualization
+        of the draft, target, and recovered probability distributions.
+
+        Returns a tensor of shape [batch_size, num_candidate, k, vocab_size].
+
+        Note: This batches operations on GPU and thus constructs the recovered
+        distribution for all tokens, even if they are accepted. This causes
+        division-by-zero errors, so we use self._smallest_positive_value to
+        avoid that. This introduces some drift to the distribution.
+        """
+        batch_size, num_candidate, k, _ = draft_probs.shape
+
+        # shape [batch_size, num_candidate, k, vocab_size]
+        difference = target_probs - draft_probs
+
+        # TODO(cade): Can we use logprobs instead of probs, and avoid the
+        # division-by-zero errors without introducing distribution drift?
+
+         # shape [batch_size, num_candidate, k, vocab_size]
+        f = torch.clamp(difference, min=self._smallest_positive_value)
+        # shape [batch_size, num_candidate, k, vocab_size]
+        recovered_probs = f / torch.sum(f, dim=-1).reshape(batch_size, num_candidate , k, 1)
         return recovered_probs
 
     @cached_property
@@ -331,7 +457,6 @@ class RejectionSampler(nn.Module):
         self.num_draft_tokens += batch_size * k
 
         return output_with_bonus_tokens
-
     def _raise_if_incorrect_shape(
         self,
         target_probs: torch.Tensor,
@@ -339,11 +464,11 @@ class RejectionSampler(nn.Module):
         draft_probs: torch.Tensor,
         draft_token_ids: torch.Tensor,
     ) -> None:
-        (target_batch_size, num_target_probs,
+        (target_batch_size, num_candidate, num_target_probs,
          target_vocab_size) = target_probs.shape
-        bonus_batch_size, num_bonus_tokens = bonus_token_ids.shape
-        draft_batch_size, num_draft_probs, draft_vocab_size = draft_probs.shape
-        draft_token_ids_batch_size, num_draft_token_ids = draft_token_ids.shape
+        bonus_batch_size, num_candidate, num_bonus_tokens = bonus_token_ids.shape
+        draft_batch_size, num_candidate, num_draft_probs, draft_vocab_size = draft_probs.shape
+        draft_token_ids_batch_size, num_candidate, num_draft_token_ids = draft_token_ids.shape
 
         assert draft_batch_size == target_batch_size
         assert num_draft_probs == num_target_probs

@@ -103,7 +103,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
     def _expand_batch(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        proposal_token_ids_list: List[List[TokenId]],
+        proposal_token_ids_list: List[List[List[TokenId]]],
         proposal_lens_list: List[int],
     ) -> Tuple[List[int], List[int], List[SequenceGroupMetadata], int]:
         """Given the input sequences and potentially multiple corresponding
@@ -124,7 +124,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             proposal_lens_list,
             select_proposal_len_zero=True)
 
-        target_seq_group_metadata_list = self._create_scoring_model_input(
+        target_seq_group_metadata_list = self._create_scoring_model_input_v2(
             seq_group_metadata_list=spec_seqs,
             proposal_token_ids=proposal_token_ids_list,
             # NOTE: We determine the seq ids in the expanded batch using the
@@ -158,8 +158,8 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
              target_sampler_output, num_scoring_tokens)
 
         # Map distinct sequences used to score each token
-        # of shape [batch_size * k + 1] back to [batch_size, k + 1].
-        expanded_batch_size, k = proposals.proposal_token_ids.shape
+        # of shape [batch_size * k + 1] back to [batch_size, num_candidate_seqs, k + 1].
+        expanded_batch_size, num_candidate_seqs, k = proposals.proposal_token_ids.shape
 
         # The number of tokens in the expanded batch used for speculation is
         # equal to the total expanded batch size minus the number of samples for
@@ -168,23 +168,25 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         spec_expanded_bs = expanded_batch_size - non_spec_expanded_bs
 
         target_token_ids = target_token_ids.squeeze().reshape(
-            spec_expanded_bs, k + 1)
-        target_probs = target_probs.squeeze().reshape(spec_expanded_bs, k + 1,
+            spec_expanded_bs, num_candidate_seqs, k + 1)
+        target_probs = target_probs.squeeze().reshape(spec_expanded_bs, num_candidate_seqs, k + 1,
                                                       self._vocab_size)
         target_logprobs = target_logprobs.squeeze().reshape(
-            spec_expanded_bs, k + 1, self._vocab_size)
+            spec_expanded_bs, num_candidate_seqs, k + 1, self._vocab_size)
 
-        all_tokens = torch.full(size=(contracted_bs, k + 1),
+        all_tokens = torch.full(size=(contracted_bs, num_candidate_seqs, k + 1),
                                 fill_value=-1,
                                 device=self._device,
                                 dtype=torch.long)
         all_probs = torch.zeros(contracted_bs,
+                                num_candidate_seqs,
                                 k + 1,
                                 self._vocab_size,
                                 device=self._device,
                                 dtype=torch.float32)
         all_logprobs = torch.full(size=(
             contracted_bs,
+            num_candidate_seqs,
             k + 1,
             self._vocab_size,
         ),
@@ -232,7 +234,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                     seq_group_metadata_list)))
 
         return target_seq_group_metadata
-
+    
     def _create_target_seq_group_metadata(
         self,
         input_seq_group_metadata: SequenceGroupMetadata,
@@ -272,6 +274,72 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                 ))
 
         return target_seq_group_metadata_list
+
+
+    def _create_target_seq_group_metadata_v2(
+        self,
+        input_seq_group_metadata: SequenceGroupMetadata,
+        proposal_token_ids: List[List[List[TokenId]]],  # shape: [batch_size, num_candidate_seqs, k]
+        batch_index: int,
+        target_seq_ids_iter: Iterator[TargetSeqId],
+    ) -> List[SequenceGroupMetadata]:
+        assert not input_seq_group_metadata.is_prompt, (
+            "Speculating on "
+            "prompts not yet supported")
+        assert len(input_seq_group_metadata.seq_data) == 1, (
+            "Beam search "
+            "not supported in speculative decoding")
+        input_seq_id = next(iter(input_seq_group_metadata.seq_data.keys()))
+
+        target_seq_group_metadata_list: List[SequenceGroupMetadata] = []
+
+        for candidate_index in range(len(proposal_token_ids[0])):
+            token_ids_to_score = self._get_token_ids_to_score(
+                proposal_token_ids[batch_index][candidate_index])
+
+            for token_ids in token_ids_to_score:
+                target_seq_group_metadata = self._create_single_target_seq_group_metadata(
+                        input_seq_group_metadata,
+                        input_seq_id,
+                        next(target_seq_ids_iter),
+                        token_ids,
+                    )
+                if len(proposal_token_ids) > 1:
+                    target_seq_group_metadata.num_lookahead_slot_mapping_dirty_offset = (
+                        candidate_index * len(proposal_token_ids[0][0])
+                    )
+                target_seq_group_metadata_list.append(target_seq_group_metadata)
+
+        return target_seq_group_metadata_list
+
+    def _create_scoring_model_input_v2(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        proposal_token_ids: List[List[List[TokenId]]],  # shape: [batch_size, num_candidate_seqs, k]
+        target_seq_ids_iter: Iterator[TargetSeqId],
+    ) -> List[SequenceGroupMetadata]:
+        """Given the original input sequences and proposed tokens from the draft
+        model, create a list of target sequences that can be used for scoring.
+
+        target_seq_ids_iter provides sequence ids for the expanded batch,
+        fulfilling the requirement that no seq id in the expanded batch is equal
+        to the seq id in the original batch.
+        """
+
+        if not seq_group_metadata_list:
+            return []
+
+        target_seq_group_metadata = list(
+            chain.from_iterable(
+                self._create_target_seq_group_metadata_v2(
+                    seq_group_metadata,
+                    proposal_token_ids,
+                    i,
+                    target_seq_ids_iter,
+                ) for i, seq_group_metadata in enumerate(
+                    seq_group_metadata_list)))
+
+        return target_seq_group_metadata
 
     def _create_single_target_seq_group_metadata(
         self,

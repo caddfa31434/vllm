@@ -394,8 +394,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_speculative_tokens)
 
-        print(f"{proposals=}")
-        print(f"{proposal_scores=}")
+        # print(f"{proposals=}")
+        # print(f"{proposal_scores=}")
         print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
@@ -433,23 +433,29 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             select_proposal_len_zero=True)
         original_indices = spec_indices + non_spec_indices
 
+        best_candidate = 0
+
         # Get probabilities of target model, excluding bonus token.
-        proposal_verifier_probs = proposal_scores.probs[spec_indices, :-1]
+        proposal_verifier_probs = proposal_scores.probs[spec_indices, best_candidate, :-1]
+
+        # Get probabilities of target model, excluding bonus token.
+        proposal_verifier_logprobs = proposal_scores.logprobs[spec_indices, best_candidate, :-1]
 
         # Get non-speculative sampled tokens from target model.
-        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices]
+        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, best_candidate]
 
         # Get bonus tokens from target model.
-        bonus_token_ids = proposal_scores.token_ids[spec_indices, -1:]
+        bonus_token_ids = proposal_scores.token_ids[spec_indices, best_candidate, -1:]
 
         # Get probabilities according to proposal method.
-        proposal_probs = proposals.proposal_probs[spec_indices]
+        proposal_probs = proposals.proposal_probs[spec_indices, best_candidate]
 
         # Get proposed tokens.
-        proposal_token_ids = proposals.proposal_token_ids[spec_indices]
+        proposal_token_ids = proposals.proposal_token_ids[spec_indices, best_candidate]
 
         accepted_token_ids = self.rejection_sampler(
             target_probs=proposal_verifier_probs,
+            target_logprobs=proposal_verifier_logprobs,
             bonus_token_ids=bonus_token_ids,
             draft_probs=proposal_probs,
             draft_token_ids=proposal_token_ids,
@@ -462,7 +468,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         non_spec_token_ids[:, 1:] = -1
         accepted_token_ids = torch.cat(
             [accepted_token_ids, non_spec_token_ids])
-        logprobs = proposal_scores.logprobs
+        logprobs = proposal_scores.logprobs[:, best_candidate]
 
         # Rearrange so that results are in the order of the original seq group
         # metadata.

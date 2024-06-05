@@ -134,7 +134,7 @@ def split_batch_by_proposal_len(
 
 
 def sampler_output_to_torch(
-    sampler_output_list: List[SamplerOutput], sampler_transposed: bool
+    sampler_output_list: List[List[SamplerOutput]], sampler_transposed: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Utility function which converts a list of SamplerOutput to tensors.
 
@@ -183,6 +183,55 @@ def sampler_output_to_torch(
 
     return sampled_token_ids, sampled_token_probs, sampled_token_logprobs
 
+
+def sampler_output_to_torch_v2(
+    sampler_output_list: List[List[SamplerOutput]], sampler_transposed: bool
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Utility function which converts a nested list of SamplerOutput to tensors.
+
+    Args:
+        sampler_output_list: Nested list of SamplerOutput.
+        sampler_transposed: Indicates whether to transpose the first two dimensions of the output tensors.
+
+    Returns:
+        sampled_token_ids: torch.Tensor with shape [batch_size, num_sequences, num_tokens]
+        sampled_token_probs: torch.Tensor with shape [batch_size, num_sequences, num_tokens, vocab_size]
+        sampled_token_logprobs: torch.Tensor with shape [batch_size, num_sequences, num_tokens, vocab_size]
+    """
+    # Stacking probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
+    sampled_token_probs = torch.stack([
+        torch.stack([
+            sampler_output.sampled_token_probs for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    # Transposing if needed
+    if sampler_transposed:
+        sampled_token_probs = sampled_token_probs.permute(2, 0, 1, 3)
+
+    # Stacking log probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
+    sampled_token_logprobs = torch.stack([
+        torch.stack([
+            sampler_output.logprobs for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    # Transposing if needed
+    if sampler_transposed:
+        sampled_token_logprobs = sampled_token_logprobs.permute(2, 0, 1, 3)
+
+    # Stacking token IDs, shape: [num_sequences, num_tokens, batch_size]
+    sampled_token_ids = torch.stack([
+        torch.stack([
+            sampler_output.sampled_token_ids.flatten() for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    # Transposing if needed
+    if sampler_transposed:
+        sampled_token_ids = sampled_token_ids.permute(2, 0, 1)
+
+    return sampled_token_ids, sampled_token_probs, sampled_token_logprobs
 
 def maybe_mock_device_tensors(sampler_output: SamplerOutput, batch_size: int,
                               vocab_size: int, device: str) -> None:
