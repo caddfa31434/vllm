@@ -400,7 +400,7 @@ class RejectionSampler(nn.Module):
             bonus_token_ids,
         )
 
-        return output_token_ids
+        return output_token_ids, best_candidate_index
 
     def _batch_modified_rejection_sampling_v2(
             self,

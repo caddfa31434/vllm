@@ -96,7 +96,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         ngram_prompt_lookup_min = (
             draft_worker_kwargs.pop("ngram_prompt_lookup_min"))
 
-        disable_bonus_tokens = True
+        disable_bonus_tokens = False
         if ngram_prompt_lookup_max > 0:
             disable_bonus_tokens = False
             proposer_worker = NGramWorker(**draft_worker_kwargs)
@@ -433,29 +433,25 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             select_proposal_len_zero=True)
         original_indices = spec_indices + non_spec_indices
 
-        best_candidate = 0
-
         # Get probabilities of target model, excluding bonus token.
-        proposal_verifier_probs = proposal_scores.probs[spec_indices, best_candidate, :-1]
+        proposal_verifier_probs = proposal_scores.probs[spec_indices, :, :-1]
 
-        # Get probabilities of target model, excluding bonus token.
-        proposal_verifier_logprobs = proposal_scores.logprobs[spec_indices, best_candidate, :-1]
-
-        # Get non-speculative sampled tokens from target model.
-        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, best_candidate]
+        # Get non-speculative sampled tokens from target model. non-speculative sampled tokens needs no N candidate
+        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, 0]
 
         # Get bonus tokens from target model.
-        bonus_token_ids = proposal_scores.token_ids[spec_indices, best_candidate, -1:]
+        bonus_token_ids = proposal_scores.token_ids[spec_indices, :, -1:]
 
         # Get probabilities according to proposal method.
-        proposal_probs = proposals.proposal_probs[spec_indices, best_candidate]
+        proposal_probs = proposals.proposal_probs[spec_indices, :]
 
         # Get proposed tokens.
-        proposal_token_ids = proposals.proposal_token_ids[spec_indices, best_candidate]
+        proposal_token_ids = proposals.proposal_token_ids[spec_indices, :]
+        # FIXME(czd): 模拟 N candidate的 dirty codes
+        # proposal_token_ids[:, 0, :] = torch.zeros(proposal_token_ids[: 0, :].size())
 
-        accepted_token_ids = self.rejection_sampler(
+        accepted_token_ids, best_candidate_index = self.rejection_sampler.forward_v2(
             target_probs=proposal_verifier_probs,
-            target_logprobs=proposal_verifier_logprobs,
             bonus_token_ids=bonus_token_ids,
             draft_probs=proposal_probs,
             draft_token_ids=proposal_token_ids,
@@ -468,7 +464,9 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         non_spec_token_ids[:, 1:] = -1
         accepted_token_ids = torch.cat(
             [accepted_token_ids, non_spec_token_ids])
-        logprobs = proposal_scores.logprobs[:, best_candidate]
+        
+        # Get log probabilities according to best_candidate_index
+        logprobs = proposal_scores.logprobs[torch.arange(proposal_scores.logprobs.size(0)), best_candidate_index, :, :]
 
         # Rearrange so that results are in the order of the original seq group
         # metadata.
