@@ -12,7 +12,7 @@ class MedusaConfig(PretrainedConfig):
 
     def __init__(self,
                  hidden_size: int = 4096,
-                 vocab_size: int = 32001,
+                 vocab_size: int = 32000,
                  num_heads: int = 5,
                  num_hidden_layers: int = 1,
                  max_paths: int = 64,

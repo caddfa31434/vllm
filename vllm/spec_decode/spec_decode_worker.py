@@ -429,7 +429,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_lookahead_slots)
-
+        print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,

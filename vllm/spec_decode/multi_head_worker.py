@@ -60,4 +60,4 @@ class MultiHeadWorker(Worker):
         speculative tokens per sequence is determined by max_proposal_len.
         """
 
-        return self._proposer.get_proposals(execute_model_req)
+        return self._proposer.get_spec_proposals(execute_model_req)

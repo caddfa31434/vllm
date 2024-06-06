@@ -3,6 +3,7 @@ from typing import Iterable, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from vllm.attention import Attention, AttentionMetadata
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     DEFAULT_VOCAB_PADDING_SIZE, ParallelLMHead)
@@ -54,8 +55,24 @@ class Medusa(nn.Module):
         self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
                                                 config.vocab_size, logit_scale)
 
-    def forward(self, hidden_states: torch.Tensor) -> list[torch.Tensor]:
-        return [block(hidden_states) for block in self.blocks]
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        hidden_states: Optional[torch.Tensor],
+        kv_caches: List[torch.Tensor],
+        attn_metadata: AttentionMetadata) -> list[torch.Tensor]:
+        # Medusa workflow
+        # [ 1, 450, 7483, 310, 3444, 338] -> [29892, 278, 29889]
+        # [3681] -> [29892, 278, 29889]
+        # [29889] -> [ 13, 338, 14956]
+        # [1576] -> [3681, 3444, 450]
+        # [27550] -> [ 310, 3444, 278]
+        # [338] -> [ 278, 6221, 27550]
+        # [11652] -> [29889, 29889, 29889]
+        # [13] -> [ 13, 16066, 3444]
+        forward_outs = [block(hidden_states) for block in self.blocks]
+        return forward_outs
 
     def compute_logits(
             self, hidden_states: list[torch.Tensor],
@@ -96,7 +113,7 @@ class Medusa(nn.Module):
 
         return outputs
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+    def load_weights_old(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in weights:
             name = name.replace("medusa_heads.", "")
@@ -107,4 +124,35 @@ class Medusa(nn.Module):
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader",
                                     default_weight_loader)
+            weight_loader(param, loaded_weight)
+
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        params_dict = dict(self.named_parameters())
+        # Mapping of loaded_dict_keys to params_dict_keys
+        key_mapping = {
+            "0.0.linear.weight": "blocks.0.layers.0.weight",
+            "1.0.linear.weight": "blocks.1.layers.0.weight",
+            "2.0.linear.weight": "blocks.2.layers.0.weight",
+            "3.0.linear.weight": "blocks.3.layers.0.weight",
+            "4.0.linear.weight": "blocks.4.layers.0.weight",
+            "0.1.weight": "lm_heads.0.weight",
+            "1.1.weight": "lm_heads.1.weight",
+            "2.1.weight": "lm_heads.2.weight",
+            "3.1.weight": "lm_heads.3.weight",
+            "4.1.weight": "lm_heads.4.weight",
+        }
+
+        # Update names in the weights
+        for name, loaded_weight in weights:
+            
+            if name in key_mapping:
+                new_name = key_mapping[name]
+            else:
+                new_name = ""
+            # Skip loading extra heads
+            if new_name not in params_dict:
+                continue
+
+            param = params_dict[new_name]
+            weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)
