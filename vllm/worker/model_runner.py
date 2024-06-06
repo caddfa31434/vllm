@@ -479,7 +479,9 @@ class ModelRunner:
                     if i < start_idx:
                         slot_mapping.append(_PAD_SLOT_ID)
                         continue
-
+                    # FIXME(czd) : dirty code for slot fragment offset
+                    if seq_group_metadata.num_lookahead_slot_mapping_dirty_offset is not None:
+                        i = i + seq_group_metadata.num_lookahead_slot_mapping_dirty_offset
                     block_number = block_table[i // self.block_size]
                     block_offset = i % self.block_size
                     slot = block_number * self.block_size + block_offset

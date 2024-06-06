@@ -5,7 +5,7 @@ import torch
 
 from vllm.sequence import ExecuteModelRequest, SamplerOutput
 from vllm.spec_decode.interfaces import SpeculativeProposals
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import TopKProposer
 from vllm.worker.worker import Worker
 
 
@@ -25,12 +25,12 @@ class MultiHeadWorker(Worker):
         super().__init__(*args, **kwargs)
 
         # Lazy initialization list.
-        self._proposer: Top1Proposer
+        self._proposer: TopKProposer
 
     def init_device(self):
         super().init_device()
 
-        self._proposer = Top1Proposer(
+        self._proposer = TopKProposer(
             weakref.proxy(self),
             self.device,
             self.vocab_size,
@@ -46,11 +46,19 @@ class MultiHeadWorker(Worker):
     def sampler_output(
         self,
         execute_model_req: ExecuteModelRequest,
+        sample_num: int,
         sample_len: int,
-    ) -> Tuple[List[SamplerOutput], bool]:
-        model_outputs = super().execute_model(
-            execute_model_req=execute_model_req)[0]
-        return model_outputs, False
+    ) -> Tuple[List[List[SamplerOutput]], bool]:
+
+        # Run model sample_num * sample_len times.
+        model_outputs_topK = []
+
+        for sample_idx in range(sample_num):
+            model_outputs = super().execute_model(
+                execute_model_req=execute_model_req)[0]
+            model_outputs_topK.append(model_outputs)
+            
+        return model_outputs_topK, False
 
     def get_spec_proposals(
         self,

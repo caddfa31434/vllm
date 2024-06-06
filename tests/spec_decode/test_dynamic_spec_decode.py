@@ -8,7 +8,7 @@ from vllm.sequence import ExecuteModelRequest
 from vllm.spec_decode.metrics import AsyncMetricsCollector
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
 from vllm.spec_decode.spec_decode_worker import SpecDecodeWorker
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import TopKProposer
 
 from .utils import create_batch, mock_worker
 
@@ -57,7 +57,7 @@ def test_disable_spec_tokens(queue_size: int, batch_size: int, k: int):
 
     draft_worker.sampler_output.side_effect = ValueError(exception_secret)
 
-    proposer = Top1Proposer(
+    proposer = TopKProposer(
         worker=draft_worker,
         device='cpu',  # not used
         vocab_size=100,  # not used

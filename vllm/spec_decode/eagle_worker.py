@@ -7,7 +7,7 @@ import torch
 from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
                            SequenceGroupMetadata)
 from vllm.spec_decode.interfaces import SpeculativeProposals
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import TopKProposer
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
 
 
@@ -27,12 +27,13 @@ class EagleWorker(MultiStepWorker):
         super().__init__(*args, **kwargs)
 
         # Lazy initialization list.
-        self._proposer: Top1Proposer
+        self._proposer: TopKProposer
 
     @torch.inference_mode()
     def sampler_output(
         self,
         execute_model_req: ExecuteModelRequest,
+        sample_num: int,
         sample_len: int,
     ) -> Tuple[List[SamplerOutput], bool]:
         """Run the model forward pass sample_len times. Returns the list of
@@ -44,28 +45,33 @@ class EagleWorker(MultiStepWorker):
         """
         self._raise_if_unsupported(execute_model_req)
 
-        # Shallow copy input data so modifications (such as appending tokens)
-        # do not cause side-effects.
-        copied_seq_group_metadata_list = self._shallow_copy_inputs(
-            execute_model_req.seq_group_metadata_list)
-        copied_execute_model_req = execute_model_req.clone(
-            copied_seq_group_metadata_list)
-
         # Assert enough KV space for sample_len tokens per sequence.
         self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
-                                     sample_len)
+                                     sample_num * sample_len)
 
-        # Run model sample_len times.
-        model_outputs = []
-        for _ in range(sample_len):
-            copied_execute_model_req.extra_outputs = "hidden_states"
-            model_output = super().execute_model(
-                execute_model_req=copied_execute_model_req)
-            model_output = model_output[0]
+        # Run model sample_num * sample_len times.
+        model_outputs_topK = []
 
-            self._append_new_tokens(model_output,
-                                    copied_seq_group_metadata_list)
-            model_outputs.append(model_output)
-            copied_execute_model_req.extra_inputs = model_output.raw_extra_tensors
+        for sample_idx in range(sample_num):
+            # Shallow copy input data so modifications (such as appending tokens)
+            # do not cause side-effects.
+            copied_seq_group_metadata_list = self._shallow_copy_inputs(
+                execute_model_req.seq_group_metadata_list, sample_idx * sample_len)
+            copied_execute_model_req = execute_model_req.clone(
+                copied_seq_group_metadata_list)
 
-        return model_outputs, True
+            model_outputs = []
+            for _ in range(sample_len):
+                copied_execute_model_req.extra_outputs = "hidden_states"
+                model_output = super().execute_model(
+                    execute_model_req=copied_execute_model_req)
+                model_output = model_output[0]
+
+                self._append_new_tokens(model_output,
+                                        copied_seq_group_metadata_list)
+                model_outputs.append(model_output)
+                copied_execute_model_req.extra_inputs = model_output.raw_extra_tensors
+
+            model_outputs_topK.append(model_outputs)
+
+        return model_outputs_topK, True

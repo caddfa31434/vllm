@@ -775,6 +775,7 @@ class SpeculativeConfig:
         target_dtype: str,
         speculative_model: Optional[str],
         num_speculative_tokens: Optional[int],
+        num_lookahead_slots: Optional[int],
         speculative_max_model_len: Optional[int],
         enable_chunked_prefill: bool,
         use_v2_block_manager: bool,
@@ -910,6 +911,7 @@ class SpeculativeConfig:
             draft_model_config,
             draft_parallel_config,
             num_speculative_tokens,
+            num_lookahead_slots,
             speculative_disable_by_batch_size,
             ngram_prompt_lookup_max,
             ngram_prompt_lookup_min,
@@ -981,6 +983,7 @@ class SpeculativeConfig:
         draft_model_config: ModelConfig,
         draft_parallel_config: ParallelConfig,
         num_speculative_tokens: int,
+        num_lookahead_slots: int,
         speculative_disable_by_batch_size: Optional[int],
         ngram_prompt_lookup_max: Optional[int],
         ngram_prompt_lookup_min: Optional[int],
@@ -1001,6 +1004,7 @@ class SpeculativeConfig:
         self.draft_model_config = draft_model_config
         self.draft_parallel_config = draft_parallel_config
         self.num_speculative_tokens = num_speculative_tokens
+        self.num_lookahead_slots = num_lookahead_slots
         self.speculative_disable_by_batch_size = \
             speculative_disable_by_batch_size
         self.ngram_prompt_lookup_max = ngram_prompt_lookup_max or 0
@@ -1017,15 +1021,15 @@ class SpeculativeConfig:
             self.draft_model_config.verify_with_parallel_config(
                 self.draft_parallel_config)
 
-    @property
-    def num_lookahead_slots(self) -> int:
-        """The number of additional slots the scheduler should allocate per
-        step, in addition to the slots allocated for each known token.
+    # @property
+    # def num_lookahead_slots(self) -> int:
+    #     """The number of additional slots the scheduler should allocate per
+    #     step, in addition to the slots allocated for each known token.
 
-        This is equal to the number of speculative tokens, as each speculative
-        token must be scored.
-        """
-        return self.num_speculative_tokens
+    #     This is equal to the number of speculative tokens, as each speculative
+    #     token must be scored.
+    #     """
+    #     return self.num_speculative_tokens
 
     def __repr__(self) -> str:
         if self.ngram_prompt_lookup_max > 0:

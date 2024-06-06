@@ -6,11 +6,11 @@ from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
                            SequenceGroupMetadata)
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeProposer)
+
 from vllm.spec_decode.proposer_worker_base import ProposerWorkerBase
-from vllm.spec_decode.util import sampler_output_to_torch
+from vllm.spec_decode.util import sampler_output_to_torch, sampler_output_to_torch_v2
 
-
-class Top1Proposer(SpeculativeProposer):
+class TopKProposer(SpeculativeProposer):
     """Helper class which separates out sequences which would exceed the max
     model length when speculated upon.
 
@@ -48,7 +48,8 @@ class Top1Proposer(SpeculativeProposer):
         Sequences which would exceed the max model length are skipped during
         speculation.
         """
-        proposal_len = execute_model_req.num_lookahead_slots
+        proposal_len = execute_model_req.num_speculative_tokens
+        proposal_num = execute_model_req.num_lookahead_slots // execute_model_req.num_speculative_tokens
         seq_group_metadata_list = execute_model_req.seq_group_metadata_list
 
         # Split speculative- and non-speculative- sequences.
@@ -67,11 +68,12 @@ class Top1Proposer(SpeculativeProposer):
             # in batch size list
             nonzero_execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=nonzero_proposal_len_seqs,
-                num_lookahead_slots=proposal_len,
+                num_speculative_tokens=proposal_len,
                 extra_inputs=execute_model_req.extra_inputs,
             )
             maybe_sampler_output, transposed = self._worker.sampler_output(
                 execute_model_req=nonzero_execute_model_req,
+                sample_num=proposal_num,
                 sample_len=proposal_len,
             )
             (
@@ -241,7 +243,7 @@ class Top1Proposer(SpeculativeProposer):
             return proposal_tokens, proposal_probs, proposal_lens_tensor
 
         sampler_output = maybe_sampler_output
-        proposal_tokens, proposal_probs, *_ = sampler_output_to_torch(
+        proposal_tokens, proposal_probs, *_ = sampler_output_to_torch_v2(
             sampler_output, sampler_transposed)
 
         # Now, reformat the output GPU tensors such that each sequence has

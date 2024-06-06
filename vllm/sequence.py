@@ -753,6 +753,7 @@ class SequenceGroupMetadata:
         # Zero means speculative decoding is disabled for some reasons.
         # TODO: We should maintain this states out of the sequence group.
         self.num_speculative_tokens = None
+        self.num_lookahead_slot_mapping_dirty_offset = None
 
         if self._token_chunk_size is None:
             if is_prompt:
@@ -950,6 +951,8 @@ class ExecuteModelRequest:
     blocks_to_swap_out: List[Tuple[int, int]] = field(default_factory=list)
     # Blocks to copy. Source to dest block.
     blocks_to_copy: List[Tuple[int, int]] = field(default_factory=list)
+    # The number of tokens per sequence for lookahead decoding.
+    num_speculative_tokens: int = 0
     # The number of slots for lookahead decoding.
     num_lookahead_slots: int = 0
     # The number of requests in the running queue.

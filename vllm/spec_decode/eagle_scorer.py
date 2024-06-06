@@ -17,7 +17,7 @@ TargetSeqId = int
 TokenId = int
 
 
-class BatchExpansionTop1Scorer(SpeculativeScorer):
+class EagleScorer(SpeculativeScorer):
     """Implements a speculative scorer that uses batch expansion to get
     probabilities of speculative tokens according to the scoring model.
 
@@ -38,7 +38,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         self._device = device
         self._vocab_size = vocab_size
 
-    @nvtx_range("BatchExpansionTop1Scorer.score_proposals")
+    @nvtx_range("EagleScorer.score_proposals")
     def score_proposals(
         self,
         execute_model_req: ExecuteModelRequest,

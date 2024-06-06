@@ -9,6 +9,7 @@ from vllm.model_executor.layers.rejection_sampler import RejectionSampler
 from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
                            SequenceGroupMetadata, TensorData)
 from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
+from vllm.spec_decode.eagle_scorer import EagleScorer
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.metrics import AsyncMetricsCollector
@@ -99,7 +100,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         ngram_prompt_lookup_min = (
             draft_worker_kwargs.pop("ngram_prompt_lookup_min"))
 
-        disable_bonus_tokens = True
+        disable_bonus_tokens = False
         if ngram_prompt_lookup_max > 0:
             disable_bonus_tokens = False
             proposer_worker = NGramWorker(**draft_worker_kwargs)
@@ -183,10 +184,18 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         self._metrics.init_gpu_tensors(self.rank)
         self.rejection_sampler.init_gpu_tensors(self.rank)
-        self.scorer = BatchExpansionTop1Scorer(
-            scorer_worker=self.scorer_worker,
-            device=self.device,
-            vocab_size=self._vocab_size)
+
+        if self.proposer_worker.model_config.hf_config.model_type == "eagle":
+            self.scorer = EagleScorer(
+                scorer_worker=self.scorer_worker,
+                device=self.device,
+                vocab_size=self._vocab_size)
+        else :
+            self.scorer = BatchExpansionTop1Scorer(
+                scorer_worker=self.scorer_worker,
+                device=self.device,
+                vocab_size=self._vocab_size)
+
 
         self._configure_model_sampler_for_spec_decode()
 
@@ -268,7 +277,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         disable_all_speculation = self._should_disable_all_speculation(
             execute_model_req)
-        num_lookahead_slots = execute_model_req.num_lookahead_slots
+        num_speculative_tokens = execute_model_req.num_speculative_tokens
 
         # Broadcast how many lookahead slots are scheduled for this step, and
         # whether all speculation is disabled, to all non-driver workers.
@@ -277,7 +286,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # dynamically, the non-driver workers won't know unless we perform a
         # communication to inform them.
         broadcast_dict = dict(
-            num_lookahead_slots=num_lookahead_slots,
+            num_speculative_tokens=num_speculative_tokens,
             disable_all_speculation=disable_all_speculation,
         )
         broadcast_tensor_dict(broadcast_dict, src=self._driver_rank)
@@ -302,14 +311,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # 3. No request: There are no requests in the batch.
         # In any of these cases, the proposer and scorer workers
         # are called normally.
-        if num_lookahead_slots == 0 or len(
+        if num_speculative_tokens == 0 or len(
                 execute_model_req.seq_group_metadata_list
         ) == 0 or disable_all_speculation:
             return self._run_no_spec(execute_model_req,
                                      skip_proposer=disable_all_speculation)
 
         return self._run_speculative_decoding_step(execute_model_req,
-                                                   num_lookahead_slots)
+                                                   num_speculative_tokens)
 
     @torch.inference_mode()
     def start_worker_execution_loop(self) -> None:
@@ -371,7 +380,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
     def _run_non_driver_rank(self) -> bool:
         """Run proposer and verifier model in non-driver workers. This is used
-        for both speculation cases (num_lookahead_slots>0) and non-speculation
+        for both speculation cases (num_speculative_tokens>0) and non-speculation
         cases (e.g. prefill).
 
         Returns True iff there are remaining sequences to process.
@@ -381,23 +390,23 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         data = broadcast_tensor_dict(src=self._driver_rank)
         if not data:
             return False
-        num_lookahead_slots = data["num_lookahead_slots"]
+
+        num_speculative_tokens = data["num_speculative_tokens"]
         disable_all_speculation = data["disable_all_speculation"]
 
-        # Even if num_lookahead_slots is zero, we want to run the proposer model
+        # Even if num_speculative_tokens is zero, we want to run the proposer model
         # as it may have KV.
         #
         # We run the proposer once per lookahead slot. In the future we should
         # delegate how many times it runs to the proposer.
-
-        no_spec = num_lookahead_slots == 0 or disable_all_speculation
+        no_spec = num_speculative_tokens == 0 or disable_all_speculation
 
         # For no_spec case, execute scorer first since that's how it's done
         # in driver worker
         if no_spec:
             self.scorer_worker.execute_model()
 
-        num_steps = num_lookahead_slots if isinstance(self.proposer_worker,
+        num_steps = num_speculative_tokens if isinstance(self.proposer_worker,
                                                       MultiStepWorker) else 1
         for _ in range(max(num_steps, 1)):
             self.proposer_worker.execute_model()
@@ -410,7 +419,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")
     def _run_speculative_decoding_step(
             self, execute_model_req: ExecuteModelRequest,
-            num_lookahead_slots: int) -> List[SamplerOutput]:
+            num_speculative_tokens: int) -> List[SamplerOutput]:
         """Execute a single step of speculative decoding.
 
         This invokes the proposer worker to get k speculative tokens for each
@@ -419,7 +428,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         Returns a list of SamplerOutput, each containing a single token per
         sequence.
         """
-        assert num_lookahead_slots == execute_model_req.num_lookahead_slots
+        assert num_speculative_tokens == execute_model_req.num_speculative_tokens
 
         # Generate proposals using draft worker.
         execute_model_req.extra_inputs = self.scorer_state
@@ -433,13 +442,16 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
-            proposals, execute_model_req.num_lookahead_slots)
+            proposals, execute_model_req.num_speculative_tokens)
+
+        # print(f"{proposals=}")
+        # print(f"{proposal_scores=}")
         print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
             target_logprobs=target_logprobs,
-            k=execute_model_req.num_lookahead_slots,
+            k=execute_model_req.num_speculative_tokens,
             extra_tensor_data=proposal_scores.extra_tensor_data)
 
     @nvtx_range("spec_decode_worker._verify_tokens")
@@ -473,21 +485,23 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         original_indices = spec_indices + non_spec_indices
 
         # Get probabilities of target model, excluding bonus token.
-        proposal_verifier_probs = proposal_scores.probs[spec_indices, :-1]
+        proposal_verifier_probs = proposal_scores.probs[spec_indices, :, :-1]
 
-        # Get non-speculative sampled tokens from target model.
-        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices]
+        # Get non-speculative sampled tokens from target model. non-speculative sampled tokens needs no N candidate
+        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, 0]
 
         # Get bonus tokens from target model.
-        bonus_token_ids = proposal_scores.token_ids[spec_indices, -1:]
+        bonus_token_ids = proposal_scores.token_ids[spec_indices, :, -1:]
 
         # Get probabilities according to proposal method.
-        proposal_probs = proposals.proposal_probs[spec_indices]
+        proposal_probs = proposals.proposal_probs[spec_indices, :]
 
         # Get proposed tokens.
-        proposal_token_ids = proposals.proposal_token_ids[spec_indices]
+        proposal_token_ids = proposals.proposal_token_ids[spec_indices, :]
+        # FIXME(czd): 模拟 N candidate的 dirty codes
+        # proposal_token_ids[:, 0, :] = torch.zeros(proposal_token_ids[: 0, :].size())
 
-        accepted_token_ids = self.rejection_sampler(
+        accepted_token_ids, best_candidate_index = self.rejection_sampler.forward_v2(
             target_probs=proposal_verifier_probs,
             bonus_token_ids=bonus_token_ids,
             draft_probs=proposal_probs,
@@ -501,11 +515,18 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         non_spec_token_ids[:, 1:] = -1
         accepted_token_ids = torch.cat(
             [accepted_token_ids, non_spec_token_ids])
-        logprobs = proposal_scores.logprobs
+        
+        # Select log probabilities according to best_candidate_index
+        logprobs = proposal_scores.logprobs[torch.arange(proposal_scores.logprobs.size(0)), best_candidate_index, :, :]
+
+        # Select proposal_scores.extra_tensor_data according to best_candidate_index
+        for k in proposal_scores.extra_tensor_data:
+            proposal_scores.extra_tensor_data[k] = proposal_scores.extra_tensor_data[k][torch.arange(proposal_scores.logprobs.size(0)), best_candidate_index, :, ]
 
         # Rearrange so that results are in the order of the original seq group
         # metadata.
         accepted_token_ids[original_indices] = accepted_token_ids.clone()
+
 
         return accepted_token_ids, logprobs
 

@@ -194,6 +194,68 @@ def sampler_output_to_torch(
             sampled_extra_output_data)
 
 
+def sampler_output_to_torch_v2(
+    sampler_output_list: List[List[SamplerOutput]], sampler_transposed: bool
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, TensorData]:
+    """Utility function which converts a nested list of SamplerOutput to tensors.
+
+    Args:
+        sampler_output_list: Nested list of SamplerOutput.
+        sampler_transposed: Indicates whether to transpose the first two dimensions of the output tensors.
+
+    Returns:
+        sampled_token_ids: torch.Tensor with shape [batch_size, num_sequences, num_tokens]
+        sampled_token_probs: torch.Tensor with shape [batch_size, num_sequences, num_tokens, vocab_size]
+        sampled_token_logprobs: torch.Tensor with shape [batch_size, num_sequences, num_tokens, vocab_size]
+    """
+    # Stacking probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
+    sampled_token_probs = torch.stack([
+        torch.stack([
+            sampler_output.sampled_token_probs for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    # Transposing if needed
+    if sampler_transposed:
+        sampled_token_probs = sampled_token_probs.permute(2, 0, 1, 3)
+
+    # Stacking log probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
+    sampled_token_logprobs = torch.stack([
+        torch.stack([
+            sampler_output.logprobs for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    # Transposing if needed
+    if sampler_transposed:
+        sampled_token_logprobs = sampled_token_logprobs.permute(2, 0, 1, 3)
+
+    # Stacking token IDs, shape: [num_sequences, num_tokens, batch_size]
+    sampled_token_ids = torch.stack([
+        torch.stack([
+            sampler_output.sampled_token_ids.flatten() for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    # Transposing if needed
+    if sampler_transposed:
+        sampled_token_ids = sampled_token_ids.permute(2, 0, 1)
+
+    sampled_extra_output_data = TensorData.stack([
+        TensorData.stack([
+            sampler_output.raw_extra_tensors for sampler_output in sequence
+        ], dim=0) for sequence in sampler_output_list
+    ], dim=0)
+
+    if sampler_transposed:
+        for k in sampled_extra_output_data:
+            sampled_extra_output_data[k] = sampled_extra_output_data[
+                k].permute(2, 0, 1, 3)
+
+    return (sampled_token_ids, sampled_token_probs, sampled_token_logprobs,
+            sampled_extra_output_data)
+
+
 def maybe_mock_device_tensors(sampler_output: SamplerOutput, batch_size: int,
                               vocab_size: int, device: str) -> None:
     """Helper method which mocks out the GPU tensors in SamplerOutput with dummy

@@ -2,7 +2,7 @@ import torch
 
 from vllm.sequence import ExecuteModelRequest
 from vllm.spec_decode.ngram_worker import NGramWorker
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import TopKProposer
 
 from .utils import create_seq_group_metadata_from_prompts, create_worker
 
@@ -27,7 +27,7 @@ def test_ngram_algo_correctness_for_single_no_match():
         seed,
     )
 
-    proposer = Top1Proposer(
+    proposer = TopKProposer(
         worker=ngram_worker,
         device=device,
         vocab_size=vocab_size,
@@ -84,7 +84,7 @@ def test_ngram_algo_correctness_for_batches_not_match_all():
         seed,
     )
 
-    proposer = Top1Proposer(
+    proposer = TopKProposer(
         worker=ngram_worker,
         device=device,
         vocab_size=vocab_size,
@@ -163,7 +163,7 @@ def test_ngram_algo_correctness_for_batches_match_all():
         seed,
     )
 
-    proposer = Top1Proposer(
+    proposer = TopKProposer(
         worker=ngram_worker,
         device=device,
         vocab_size=vocab_size,

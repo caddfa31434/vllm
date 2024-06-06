@@ -6,7 +6,7 @@ import torch
 from vllm.sequence import ExecuteModelRequest, SamplerOutput
 from vllm.spec_decode.interfaces import SpeculativeProposals
 from vllm.spec_decode.proposer_worker_base import NonLLMProposerWorkerBase
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import TopKProposer
 from vllm.worker.worker_base import LoraNotSupportedWorkerBase
 
 
@@ -24,7 +24,7 @@ class NGramWorker(NonLLMProposerWorkerBase, LoraNotSupportedWorkerBase):
         self.vocab_size = kwargs["model_config"].get_vocab_size()
 
         # Lazy initialization list.
-        self._proposer: Top1Proposer
+        self._proposer: TopKProposer
 
     def set_ngram_window_size(self, ngram_prompt_lookup_min: int,
                               ngram_prompt_lookup_max: int):
@@ -37,8 +37,8 @@ class NGramWorker(NonLLMProposerWorkerBase, LoraNotSupportedWorkerBase):
         self.device = torch.device(f"cuda:{self.local_rank}")
         self.load_model = lambda *args, **kwargs: None
 
-        # Current only support Top1Proposer
-        self._proposer = Top1Proposer(
+        # Current only support TopKProposer
+        self._proposer = TopKProposer(
             weakref.proxy(self),  # type: ignore[arg-type]
             device=self.device,
             vocab_size=self.vocab_size,

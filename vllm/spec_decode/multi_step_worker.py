@@ -8,7 +8,7 @@ from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
                            SequenceGroupMetadata)
 from vllm.spec_decode.interfaces import SpeculativeProposals
 from vllm.spec_decode.proposer_worker_base import ProposerWorkerBase
-from vllm.spec_decode.top1_proposer import Top1Proposer
+from vllm.spec_decode.top1_proposer import TopKProposer
 from vllm.worker.worker import Worker
 
 
@@ -28,12 +28,12 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
         super().__init__(*args, **kwargs)
 
         # Lazy initialization list.
-        self._proposer: Top1Proposer
+        self._proposer: TopKProposer
 
     def init_device(self):
         super().init_device()
 
-        self._proposer = Top1Proposer(
+        self._proposer = TopKProposer(
             weakref.proxy(self),  # type: ignore[arg-type]
             self.device,
             self.vocab_size,
@@ -48,8 +48,9 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
     def sampler_output(
         self,
         execute_model_req: ExecuteModelRequest,
+        sample_num: int,
         sample_len: int,
-    ) -> Tuple[List[SamplerOutput], bool]:
+    ) -> Tuple[List[List[SamplerOutput]], bool]:
         """Run the model forward pass sample_len times. Returns the list of
         sampler output, one per model forward pass, along with indicator of
         whether torch tensor in sampler output need to be transposed in latter
@@ -59,31 +60,36 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
         """
         self._raise_if_unsupported(execute_model_req)
 
-        # Shallow copy input data so modifications (such as appending tokens)
-        # do not cause side-effects.
-        copied_seq_group_metadata_list = self._shallow_copy_inputs(
-            execute_model_req.seq_group_metadata_list)
-        copied_execute_model_req = execute_model_req.clone(
-            copied_seq_group_metadata_list)
-
         # Assert enough KV space for sample_len tokens per sequence.
         self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
-                                     sample_len)
+                                     sample_num * sample_len)
 
-        # Run model sample_len times.
-        model_outputs = []
-        for _ in range(sample_len):
-            model_output = super().execute_model(
-                execute_model_req=copied_execute_model_req)
-            assert (len(model_output) == 1
-                    ), "composing multistep workers not supported"
-            model_output = model_output[0]
+        # Run model sample_num * sample_len times.
+        model_outputs_topK = []
 
-            self._append_new_tokens(model_output,
-                                    copied_seq_group_metadata_list)
-            model_outputs.append(model_output)
+        for sample_idx in range(sample_num):
+            # Shallow copy input data so modifications (such as appending tokens)
+            # do not cause side-effects.
+            copied_seq_group_metadata_list = self._shallow_copy_inputs(
+                execute_model_req.seq_group_metadata_list, sample_idx * sample_len)
+            copied_execute_model_req = execute_model_req.clone(
+                copied_seq_group_metadata_list)
 
-        return model_outputs, True
+            model_outputs = []
+            for _ in range(sample_len):
+                model_output = super().execute_model(
+                    execute_model_req=copied_execute_model_req)
+                assert (len(model_output) == 1
+                        ), "composing multistep workers not supported"
+                model_output = model_output[0]
+
+                self._append_new_tokens(model_output,
+                                        copied_seq_group_metadata_list)
+                model_outputs.append(model_output)
+                
+            model_outputs_topK.append(model_outputs)
+
+        return model_outputs_topK, True
 
     def get_spec_proposals(
         self,
@@ -120,7 +126,8 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
 
     @staticmethod
     def _shallow_copy_inputs(
-        seq_group_metadata_list: List[SequenceGroupMetadata]
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        num_lookahead_slot_mapping_dirty_offset: int
     ) -> List[SequenceGroupMetadata]:
         """Copy input data structures to remove side-effects when input data
         structures are shared with other modules.
@@ -147,7 +154,7 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
                     seq_id].output_token_ids = old_seq_data.output_token_ids[:]
 
             seq_group_metadata.seq_data = new_seq_data
-
+            seq_group_metadata.num_lookahead_slot_mapping_dirty_offset = num_lookahead_slot_mapping_dirty_offset
         return new_seq_group_metadata_list
 
     def _assert_enough_kv_space(
