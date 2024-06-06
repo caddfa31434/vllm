@@ -4,27 +4,26 @@ from vllm.sampling_params import SamplingParams
 import os
 os.environ['VLLM_ATTENTION_BACKEND'] = 'XFORMERS'
 
+# llm = LLM(
+#     model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/vicuna-7b-v1.3/",
+#     # speculative_model="/data/jieni/workspace/code/inference-toolboxes/vllm_master/flipkart-incubator/vllm/medusa-vicuna-7b-v1.3",
+#     # speculative_model="FasterDecoding/medusa-v1.0-vicuna-7b-v1.5",
+#     # num_speculative_tokens=2,
+#     use_v2_block_manager=True,
+#     tensor_parallel_size=1,
+#     gpu_memory_utilization=0.5,
+#     enforce_eager=True,
+# )
+
 llm = LLM(
-    model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/vicuna-7b-v1.3/",
-    # speculative_model="/data/jieni/workspace/code/inference-toolboxes/vllm_master/flipkart-incubator/vllm/medusa-vicuna-7b-v1.3",
-    # speculative_model="FasterDecoding/medusa-v1.0-vicuna-7b-v1.5",
-    # num_speculative_tokens=3,
+    model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/Llama-2-7b-chat-hf",
+    speculative_model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/EAGLE-llama2-chat-7B",
+    num_speculative_tokens=2,
     use_v2_block_manager=True,
     tensor_parallel_size=1,
     gpu_memory_utilization=0.5,
     enforce_eager=True,
 )
-
-# llm = LLM(
-#     model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/Llama-2-7b-chat-hf",
-#     speculative_model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/EAGLE-llama2-chat-7B",
-#     num_speculative_tokens=2,
-#     use_v2_block_manager=True,
-#     extra_inputs_for_draft_model="hidden_states",
-#     tensor_parallel_size=1,
-#     gpu_memory_utilization=0.5,
-#     enforce_eager=True,
-# )
 
 # llm = LLM(
 #     model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/Llama-2-7b-chat-hf",

@@ -6,6 +6,7 @@ from vllm.transformers_utils.configs.dbrx import DbrxConfig
 from vllm.transformers_utils.configs.falcon import RWConfig
 from vllm.transformers_utils.configs.jais import JAISConfig
 from vllm.transformers_utils.configs.medusa import MedusaConfig
+from vllm.transformers_utils.configs.eagle import EagleConfig
 from vllm.transformers_utils.configs.mpt import MPTConfig
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "RWConfig",
     "JAISConfig",
     "MedusaConfig",
+    "EagleConfig",
 ]

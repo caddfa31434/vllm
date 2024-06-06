@@ -58,6 +58,8 @@ _GENERATION_MODELS = {
     "XverseForCausalLM": ("xverse", "XverseForCausalLM"),
     # medusa
     "MedusaModel": ("medusa", "Medusa"),
+    # eagle
+    "EagleModel": ("eagle", "Eagle"),
     "Phi3SmallForCausalLM": ("phi3_small", "Phi3SmallForCausalLM"),
 }
 

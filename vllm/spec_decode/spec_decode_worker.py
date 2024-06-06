@@ -13,6 +13,7 @@ from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.metrics import AsyncMetricsCollector
 from vllm.spec_decode.multi_head_worker import MultiHeadWorker
+from vllm.spec_decode.eagle_worker import EagleWorker
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
 from vllm.spec_decode.ngram_worker import NGramWorker
 from vllm.spec_decode.proposer_worker_base import ProposerWorkerBase
@@ -108,6 +109,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
                 "model_config"].hf_config.model_type == "medusa":
             disable_bonus_tokens = False
             proposer_worker = MultiHeadWorker(**draft_worker_kwargs)
+        elif draft_worker_kwargs[
+                "model_config"].hf_config.model_type == "eagle":
+            disable_bonus_tokens = False
+            proposer_worker = EagleWorker(**draft_worker_kwargs)
         else:
             proposer_worker = MultiStepWorker(**draft_worker_kwargs)
 
