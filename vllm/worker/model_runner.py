@@ -313,7 +313,12 @@ class ModelRunner:
                     # get_num_computed_tokens is incorrect for spec decoding.
                     # So, we should have a special logic here.
                     # TODO(sang): Fix it.
-                    context_len = seq_data.get_len() - 1
+
+                    # TODO(czd): I think no need a special logic for draft right now
+                    if not self.is_driver_worker:
+                         context_len = seq_data.get_num_computed_tokens()
+                    else:
+                       context_len = seq_data.get_len() - 1
 
                 seq_len = min(
                     seq_data.get_len(),
@@ -624,6 +629,7 @@ class ModelRunner:
                 context_lens_tensor=context_lens_tensor,
                 block_tables=block_tables,
                 use_cuda_graph=use_captured_graph,
+                tree_width=1,
             )
 
         if self.lora_config:
@@ -798,6 +804,7 @@ class ModelRunner:
             "positions": input_positions,
             "kv_caches": kv_caches,
             "attn_metadata": attn_metadata,
+            "sampling_metadata": sampling_metadata,
         }
         execute_model_kwargs.update(extra_inputs.asdict())
 

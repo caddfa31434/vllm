@@ -5,6 +5,7 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.attention.ops.prefix_prefill import context_attention_fwd
+from vllm.attention.ops.tree_attn import tree_attention_fwd
 
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
@@ -85,12 +86,14 @@ class PagedAttention:
         value_cache: torch.Tensor,
         block_tables: torch.Tensor,
         seq_lens: torch.Tensor,
+        context_lens: torch.Tensor,
         max_seq_len: int,
         kv_cache_dtype: str,
         num_kv_heads: int,
         scale: float,
         alibi_slopes: Optional[torch.Tensor],
         kv_scale: float,
+        tree_width: Optional[int],
         tp_rank: int = 0,
         blocksparse_local_blocks: int = 0,
         blocksparse_vert_stride: int = 0,
@@ -120,8 +123,15 @@ class PagedAttention:
         use_v1 = (max_seq_len <= 8192
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
 
-        if use_v1:
+        # Hard Codes for dispatch tree attention
+        if tree_width > 1:
+            # print(f"tree_attention_fwd--------")
+            tree_attention_fwd(query, output, key_cache, value_cache,
+                               block_tables, seq_lens, context_lens, 
+                               tree_width, alibi_slopes)
+        elif use_v1:
             # Run PagedAttention V1.
+            # print(f"paged_attention_v1--------")
             ops.paged_attention_v1(
                 output,
                 query,
@@ -144,6 +154,7 @@ class PagedAttention:
             )
         else:
             # Run PagedAttention V2.
+            # print(f"paged_attention_v2--------")
             assert _PARTITION_SIZE % block_size == 0
             tmp_output = torch.empty(
                 size=(num_seqs, num_heads, max_num_partitions, head_size),

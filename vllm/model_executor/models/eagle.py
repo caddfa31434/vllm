@@ -273,7 +273,8 @@ class EagleModel(nn.Module):
         else:
             hidden_states = self.get_input_embeddings(input_ids)
         # TODO: Star Code 2 
-        hidden_states = self.fc(torch.cat((hidden_states, hidden_input), dim=-1))
+        # hidden_states = self.fc(torch.cat((hidden_states, hidden_input), dim=-1))
+        hidden_states = self.fc(torch.cat((hidden_states, hidden_input.view(-1, hidden_input.shape[-1])), dim=-1))
 
         residual = None
         for i in range(len(self.layers)):
@@ -290,6 +291,92 @@ class EagleModel(nn.Module):
         hidden_states = hidden_states + residual
         return hidden_states
 
+def pad_path(path, length, pad_value=-2):
+    """
+    Pad the given path list with a specific value up to a specified length.
+
+    Parameters:
+    - path (list): The original list that needs padding.
+    - length (int): The desired length of the padded list.
+    - pad_value (optional, default=-2): The value to use for padding.
+
+    Returns:
+    - list: A new list based on the original path but padded to the desired length.
+
+    Example:
+    >>> pad_path([1,2,3], 5)
+    [1, 2, 3, -2, -2]
+
+    Note:
+    If the given path is already longer than the specified length,
+    then no padding occurs, and the original path is returned.
+    """
+
+    # Calculate the number of padding values needed by subtracting the length
+    # of the path from the desired length.
+    # Append the padding values to the original path and return the new list.
+    return path + [pad_value] * (length - len(path))
+
+class node:
+    def __init__(self,parent=None,value=None,dict_key=None):
+        self.parent=parent
+        self.value=value
+        if parent:
+            self.depth=parent.depth+1
+            parent.children.append(self)
+        else:
+            self.depth=0
+        self.children=[]
+        self.dict_key=dict_key
+    def is_leaf(self):
+        return len(self.children)==0
+
+    def all_index(self):
+        if not self.parent.parent:
+            return [self.index]
+        else:
+            return self.parent.all_index()+[self.index]
+
+
+class Tree:
+    def __init__(self,tree_list):
+        sorted_tree_list = sorted(tree_list, key=lambda x: (len(x), x))
+        self.root=node()
+        self.node_dic={}
+        for tree_node in sorted_tree_list:
+            cur_value=tree_node[-1]
+            if len(tree_node)==1:
+                cur_node=node(parent=self.root,value=cur_value,dict_key=tuple(tree_node))
+            else:
+                cur_parent=self.node_dic[tuple(tree_node[:-1])]
+                cur_node = node(parent=cur_parent, value=cur_value,dict_key=tuple(tree_node))
+            self.node_dic[tuple(tree_node)] = cur_node
+        self.indexnode()
+
+    def max_depth(self):
+        return max([item.depth for item in self.node_dic.values()])
+
+    def num_node_wchild(self):
+        num_c=0
+        for item in self.node_dic.values():
+            if not item.is_leaf():
+                num_c+=1
+        return num_c
+
+    def get_node_wchild(self):
+        ns=[]
+        for item in self.node_dic.values():
+            if not item.is_leaf():
+                ns.append(item)
+        return ns
+
+    def indexnode(self):
+        cur_index=0
+        for key in self.node_dic:
+            cur_node=self.node_dic[key]
+            if not cur_node.is_leaf():
+                cur_node.index=cur_index
+                cur_index+=1
 
 class Eagle(nn.Module):
     packed_modules_mapping = {
@@ -348,6 +435,82 @@ class Eagle(nn.Module):
                                                 config.vocab_size, logit_scale)
         self.sampler = Sampler()
 
+    def generate_tree_buffers(self, tree_choices):
+        tree=Tree(tree_choices)
+        sorted_tree_choices = sorted(tree_choices, key=lambda x: (len(x), x))
+        tree_len = tree.num_node_wchild()
+
+        max_depth=tree.max_depth()
+        nodes_wc=tree.get_node_wchild()
+
+        depth_counts=[0 for _ in range(max_depth-1)]
+        for x in nodes_wc:
+            depth_counts[x.depth-1]+=1
+        depth_counts_sum = [sum(depth_counts[:i + 1]) for i in range(len(depth_counts))]
+
+        tree_attn_mask = torch.eye(tree_len, tree_len)
+
+        for id,x in enumerate(nodes_wc):
+            tree_attn_mask[id,x.all_index()]=1
+
+        tree_attn_mask_list0=[tree_attn_mask[:ml,:ml] for ml in depth_counts_sum]
+        tree_attn_mask_list=[]
+        for id,x in enumerate(tree_attn_mask_list0):
+            x=x[-depth_counts[id]:]
+            tree_attn_mask_list.append(x)
+
+        tree_indices_list = [torch.zeros(ml, dtype=torch.long) for ml in depth_counts]
+        repeat_nums=[[] for _ in depth_counts]
+        start = 0
+        bias = 0
+        for i in range(len(depth_counts)):
+            bias = 0
+            repeat_j=0
+            for j in range(depth_counts[i]):
+                cur_node = nodes_wc[start + j]
+                cur_parent = cur_node.parent
+
+                if j != 0:
+                    if cur_parent != parent:
+                        bias += 1
+                        parent = cur_parent
+                        repeat_nums[i].append(j-repeat_j)
+                        repeat_j=j
+                else:
+                    parent = cur_parent
+                tree_indices_list[i][j] = cur_node.value + self.config.topk * (bias)
+            repeat_nums[i].append(j - repeat_j+1)
+            start += depth_counts[i]
+
+        position_ids = [torch.zeros(ml, dtype=torch.long) for ml in depth_counts]
+
+        tree_buffers = {
+            "attn_mask": [i.unsqueeze(0).unsqueeze(0) for i in tree_attn_mask_list],
+            "tree_indices": tree_indices_list,
+            "position_ids":position_ids,
+            "repeat_nums":repeat_nums
+        }
+
+        # Move the tensors in the dictionary to the specified device
+        tree_buffers = {
+            k: [i.clone() for i in v]
+            if isinstance(v[0], torch.Tensor)
+            else (
+                torch.tensor(v)
+                if isinstance(v, torch.Tensor)
+                else v
+            )
+            for k, v in tree_buffers.items()
+        }
+        return tree_buffers
+
+    def repeat_hidden(self, hidden_state, repeat_num):
+        new_hidden = []
+        hidden_state = hidden_state.unsqueeze(1)
+        for id, i in enumerate(repeat_num):
+            new_hidden.append(hidden_state[:, id:id + 1].repeat(1, i, 1))
+        return torch.cat(new_hidden, dim=1)
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -355,21 +518,37 @@ class Eagle(nn.Module):
         hidden_states: Optional[torch.Tensor],
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
-        # sampling_metadata: SamplingMetadata,
+        sampling_metadata: SamplingMetadata,
     ) -> list[torch.Tensor]:
-        # Eagle workflow
-        # [1, 450, 7483,  310, 3444,  338]
-        # [3681] -> [29892, 278, 29889]
-        # [29889] -> [29889,  3681, 29892]
-        # [739] -> [  739,  338, 3681]
-        # [338, 5982] -> [5982,  297,  278]
-        # [297,   278, 14622] -> [14622,  6555,   310]
-        # [6555,  760] -> [ 760, 310, 278]
-        # [310,  278, 4234]
-        # hidden_states = self.model(hidden_states, input_ids, positions, kv_caches, attn_metadata)
-        # hidden_states = self.model(hidden_states, torch.cat((input_ids[1:], torch.tensor([3681]).to(input_ids.device)), dim=0), positions, kv_caches, attn_metadata)
-        out_hidden = self.model(hidden_states, input_ids, positions, kv_caches,
-                                   attn_metadata)
+        if attn_metadata.num_prefill_tokens > 0 and attn_metadata.num_decode_tokens == 0 :
+            out_hidden = self.model(hidden_states, input_ids, positions, kv_caches,
+                                    attn_metadata)
+        else:
+            out_hidden = self.model(hidden_states, input_ids, positions, kv_caches, attn_metadata)
+            logits = self.logits_processor(self.lm_head.weight, out_hidden, sampling_metadata)
+            token_ids = torch.topk(logits, self.config.topk, dim=-1).indices
+            logprobs = torch.topk(torch.log_softmax(logits, dim=-1), self.config.topk, dim=-1).values
+            
+            next_input_ids = token_ids[:, self.tree_buffer['tree_indices'][0]].view(-1)
+            next_hidden_states = self.repeat_hidden(out_hidden, self.tree_buffer["repeat_nums"][0])
+            next_position_ids = positions.unsqueeze(1).expand(positions.shape[0], len(self.tree_buffer['tree_indices'])) + self.tree_buffer["position_ids"][0].to(positions.device) + 1
+            
+            attn_metadata.slot_mapping += 1 
+            attn_metadata.num_decode_tokens = len(next_input_ids)
+
+            attn_metadata.decode_metadata.seq_lens_tensor += len(self.tree_buffer["tree_indices"][0])
+            attn_metadata.decode_metadata.context_lens_tensor = attn_metadata.context_lens_tensor + 1
+            attn_metadata.decode_metadata.max_decode_seq_len = torch.max(attn_metadata.decode_metadata.seq_lens_tensor).item()
+            attn_metadata.decode_metadata.tree_width = len(self.tree_buffer["tree_indices"][0])
+            
+            next_out_hidden = self.model(next_hidden_states, next_input_ids, next_position_ids, kv_caches, attn_metadata)
+            sampling_metadata.selected_token_indices = torch.arange(0, next_out_hidden.shape[0]).to(sampling_metadata.selected_token_indices.device)
+            logits = self.logits_processor(self.lm_head.weight, next_out_hidden, sampling_metadata)
+            token_ids = torch.topk(logits, self.config.topk, dim=-1).indices
+            logprobs = torch.topk(torch.log_softmax(logits, dim=-1), self.config.topk, dim=-1).values
+             
+            next_input_ids = token_ids.view(4, 40)[:, self.tree_buffer['tree_indices'][0]]
+            
         return out_hidden
 
     def compute_logits(self, hidden_states: torch.Tensor,
@@ -384,6 +563,8 @@ class Eagle(nn.Module):
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
+        token_ids = torch.topk(logits, self.config.topk, dim=-1).indices
+        logprobs = torch.topk(torch.log_softmax(logits, dim=-1), self.config.topk, dim=-1).values
         return next_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
@@ -439,6 +620,8 @@ class Eagle(nn.Module):
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)
                 weight_loader(param, loaded_weight)
+
+        self.tree_buffer = self.generate_tree_buffers(self.config.tree_choices)
 
     # If this function is called, it should always initialize KV cache scale
     # factors (or else raise an exception). Thus, handled exceptions should

@@ -35,7 +35,7 @@ class EagleWorker(MultiStepWorker):
         execute_model_req: ExecuteModelRequest,
         sample_num: int,
         sample_len: int,
-    ) -> Tuple[List[SamplerOutput], bool]:
+    ) -> Tuple[List[List[SamplerOutput]], bool]:
         """Run the model forward pass sample_len times. Returns the list of
         sampler output, one per model forward pass, along with indicator of
         whether torch tensor in sampler output need to be transposed in latter
@@ -49,29 +49,87 @@ class EagleWorker(MultiStepWorker):
         self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
                                      sample_num * sample_len)
 
-        # Run model sample_num * sample_len times.
+        # Get sample_num * sample_len Outputs.
         model_outputs_topK = []
 
-        for sample_idx in range(sample_num):
-            # Shallow copy input data so modifications (such as appending tokens)
-            # do not cause side-effects.
-            copied_seq_group_metadata_list = self._shallow_copy_inputs(
-                execute_model_req.seq_group_metadata_list, sample_idx * sample_len)
-            copied_execute_model_req = execute_model_req.clone(
-                copied_seq_group_metadata_list)
+        # for sample_idx in range(sample_num):
+        #     # Shallow copy input data so modifications (such as appending tokens)
+        #     # do not cause side-effects.
+        #     copied_seq_group_metadata_list = self._shallow_copy_inputs(
+        #         execute_model_req.seq_group_metadata_list, sample_idx * sample_len)
+        #     copied_execute_model_req = execute_model_req.clone(
+        #         copied_seq_group_metadata_list)
 
-            model_outputs = []
-            for _ in range(sample_len):
-                copied_execute_model_req.extra_outputs = "hidden_states"
-                model_output = super().execute_model(
-                    execute_model_req=copied_execute_model_req)
-                model_output = model_output[0]
+        #     model_outputs = []
+        #     for _ in range(sample_len):
+        #         copied_execute_model_req.extra_outputs = "hidden_states"
+        #         model_output = super().execute_model(
+        #             execute_model_req=copied_execute_model_req)
+        #         model_output = model_output[0]
 
-                self._append_new_tokens(model_output,
-                                        copied_seq_group_metadata_list)
-                model_outputs.append(model_output)
-                copied_execute_model_req.extra_inputs = model_output.raw_extra_tensors
+        #         self._append_new_tokens(model_output,
+        #                                 copied_seq_group_metadata_list)
+        #         model_outputs.append(model_output)
+        #         copied_execute_model_req.extra_inputs = model_output.raw_extra_tensors
 
-            model_outputs_topK.append(model_outputs)
+        #     model_outputs_topK.append(model_outputs)
+
+        # Step 0
+        copied_seq_group_metadata_list = self._shallow_copy_inputs(
+            execute_model_req.seq_group_metadata_list, num_lookahead_slot_mapping_dirty_offset = 0)
+        copied_execute_model_req = execute_model_req.clone(
+            copied_seq_group_metadata_list)
+
+        copied_execute_model_req.extra_outputs = "hidden_states"
+        model_output = super().execute_model(
+            execute_model_req=copied_execute_model_req)
+        model_output = model_output[0]
 
         return model_outputs_topK, True
+
+    @staticmethod
+    def _append_new_tokens(
+            model_output: List[SamplerOutput],
+            seq_group_metadata_list: List[SequenceGroupMetadata]) -> None:
+        """Given model output from a single run, append the tokens to the
+        sequences. This is normally done outside of the worker, but it is
+        required if the worker is to perform multiple forward passes.
+        """
+        for seq_group_metadata, sequence_group_outputs in zip(
+                seq_group_metadata_list, model_output):
+            seq_group_metadata.is_prompt = False
+
+            for seq_output in sequence_group_outputs.samples:
+                # NOTE: Beam search is not supported, so we can assume that
+                # parent_seq_id == seq_id.
+                seq = seq_group_metadata.seq_data[seq_output.parent_seq_id]
+
+                token_id = seq_output.output_token
+                token_logprob = seq_output.logprobs[token_id]
+
+                seq.append_token_id(token_id, token_logprob.logprob)
+                seq.update_num_computed_tokens(1)
+
+    @staticmethod
+    def _append_new_tokens_v2(
+            model_output: List[SamplerOutput],
+            seq_group_metadata_list: List[SequenceGroupMetadata],
+            num_new_computed_tokens) -> None:
+        """Given model output from a single run, append the tokens to the
+        sequences. This is normally done outside of the worker, but it is
+        required if the worker is to perform multiple forward passes.
+        """
+        for seq_group_metadata, sequence_group_outputs in zip(
+                seq_group_metadata_list, model_output):
+            seq_group_metadata.is_prompt = False
+
+            for seq_output in sequence_group_outputs.samples:
+                # NOTE: Beam search is not supported, so we can assume that
+                # parent_seq_id == seq_id.
+                seq = seq_group_metadata.seq_data[seq_output.parent_seq_id]
+
+                token_id = seq_output.output_token
+                token_logprob = seq_output.logprobs[token_id]
+
+                seq.append_token_id(token_id, token_logprob.logprob)
+                seq.update_num_computed_tokens(num_new_computed_tokens)

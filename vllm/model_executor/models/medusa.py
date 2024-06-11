@@ -92,6 +92,7 @@ class Medusa(nn.Module):
         token_ids = logits.argmax(-1)  # support only top-1 for now
         probs = torch.softmax(logits, dim=-1)
 
+
         token_id_list = []
         token_prob_list = []
         token_logprob_list = []

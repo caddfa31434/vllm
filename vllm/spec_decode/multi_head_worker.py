@@ -50,7 +50,7 @@ class MultiHeadWorker(Worker):
         sample_len: int,
     ) -> Tuple[List[List[SamplerOutput]], bool]:
 
-        # Run model sample_num * sample_len times.
+        # Get sample_num * sample_len Outputs.
         model_outputs_topK = []
 
         for sample_idx in range(sample_num):

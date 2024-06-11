@@ -108,6 +108,8 @@ class XFormersMetadata(AttentionMetadata, PagedAttentionMetadata):
     _cached_prefill_metadata: Optional["XFormersMetadata"] = None
     _cached_decode_metadata: Optional["XFormersMetadata"] = None
 
+    tree_width: Optional[int] = 1
+
     def __post_init__(self):
         # Set during the execution of the first attention op.
         # It is a list because it is needed to set per prompt
@@ -326,12 +328,14 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 value_cache,
                 decode_meta.block_tables,
                 decode_meta.seq_lens_tensor,
+                decode_meta.context_lens_tensor,
                 decode_meta.max_decode_seq_len,
                 self.kv_cache_dtype,
                 self.num_kv_heads,
                 self.scale,
                 self.alibi_slopes,
                 kv_scale,
+                decode_meta.tree_width,
             )
 
         # Reshape the output tensor.

@@ -42,6 +42,12 @@ class EagleConfig(PretrainedConfig):
             "hidden_states": ModelInputSpec(shape=(hidden_size, ))
         }
 
+        # self.tree_choices = [[0],[1],[2],[3],[0,0],[0,1],[0,2],[1,0],[1,1],[2,0],[2,1],[3,0]
+        #         ,[0,0,0],[0,0,1],[0,0,2],[0,1,0],[0,1,1],[0,2,0],[0,2,1],[1,0,0],
+        #         [0,0,0,0],[0,0,0,1],[0,0,0,2],[0,0,0,0,0],[0,0,0,0,1]]
+        self.tree_choices = [[0], [0, 0], [0, 1], [0, 2], [0, 3]] # # 1st depth we choose top 1 and 2nd depth we choose top 4
+        self.topk = topk
+
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
