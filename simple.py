@@ -18,8 +18,9 @@ os.environ['VLLM_ATTENTION_BACKEND'] = 'XFORMERS'
 llm = LLM(
     model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/Llama-2-7b-chat-hf",
     speculative_model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/EAGLE-llama2-chat-7B",
-    num_speculative_tokens=3,
-    num_lookahead_slots=12,
+    num_speculative_candidates=15,
+    num_speculative_tokens=5,
+    num_lookahead_slots=75,
     use_v2_block_manager=True,
     tensor_parallel_size=1,
     gpu_memory_utilization=0.5,
@@ -37,7 +38,7 @@ llm = LLM(
 #     enforce_eager=True
 # )
 
-sampling_params = SamplingParams(temperature=0.0, max_tokens=500)
+sampling_params = SamplingParams(temperature=0.0, max_tokens=10)
 prompts = [
     # "Hello, my name is",
     # "The president of the United States is",

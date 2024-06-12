@@ -91,6 +91,7 @@ class EngineArgs:
     guided_decoding_backend: str = 'outlines'
     # Speculative decoding configuration.
     speculative_model: Optional[str] = None
+    num_speculative_candidates: Optional[int] = None
     num_speculative_tokens: Optional[int] = None
     num_lookahead_slots: int = 0
     speculative_max_model_len: Optional[int] = None
@@ -524,6 +525,12 @@ class EngineArgs:
         parser.add_argument(
             '--num-speculative-tokens',
             type=int,
+            default=EngineArgs.num_speculative_candidates,
+            help='The number of speculative tokens to sample from '
+            'the draft model in speculative decoding.')
+        parser.add_argument(
+            '--num-speculative-tokens',
+            type=int,
             default=EngineArgs.num_speculative_tokens,
             help='The number of speculative tokens to sample from '
             'the draft model in speculative decoding.')
@@ -668,6 +675,7 @@ class EngineArgs:
             target_parallel_config=parallel_config,
             target_dtype=self.dtype,
             speculative_model=self.speculative_model,
+            num_speculative_candidates=self.num_speculative_candidates,
             num_speculative_tokens=self.num_speculative_tokens,
             num_lookahead_slots=self.num_lookahead_slots,
             speculative_disable_by_batch_size=self.

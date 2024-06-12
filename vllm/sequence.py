@@ -58,6 +58,10 @@ class TensorData:
     def clear(self):
         self._dict.clear()
 
+    def zeros(self):
+        for k in self._dict:
+            self._dict[k] = torch.zeros_like(self._dict[k])
+
     def index(self, *idx: int) -> "TensorData":
         return TensorData(**{k: v[idx] for k, v in self._dict.items()})
 
@@ -951,7 +955,9 @@ class ExecuteModelRequest:
     blocks_to_swap_out: List[Tuple[int, int]] = field(default_factory=list)
     # Blocks to copy. Source to dest block.
     blocks_to_copy: List[Tuple[int, int]] = field(default_factory=list)
-    # The number of tokens per sequence for lookahead decoding.
+    # The number of candidates per sequence for lookahead decoding.
+    num_speculative_candidates: int = 0
+    # The number of slots for lookahead decoding.
     num_speculative_tokens: int = 0
     # The number of slots for lookahead decoding.
     num_lookahead_slots: int = 0
