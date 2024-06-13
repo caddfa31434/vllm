@@ -774,6 +774,7 @@ class SpeculativeConfig:
         target_parallel_config: ParallelConfig,
         target_dtype: str,
         speculative_model: Optional[str],
+        num_speculative_candidates: Optional[int],
         num_speculative_tokens: Optional[int],
         num_lookahead_slots: Optional[int],
         speculative_max_model_len: Optional[int],
@@ -797,6 +798,8 @@ class SpeculativeConfig:
             target_dtype (str): The data type used for the target model.
             speculative_model (Optional[str]): The name of the speculative
                 model, if provided.
+            num_speculative_candidates (Optional[int]): The number of speculative
+                candidates, if provided.
             num_speculative_tokens (Optional[int]): The number of speculative
                 tokens, if provided.
             speculative_max_model_len (Optional[int]): The maximum model len of
@@ -910,6 +913,7 @@ class SpeculativeConfig:
         return SpeculativeConfig(
             draft_model_config,
             draft_parallel_config,
+            num_speculative_candidates,
             num_speculative_tokens,
             num_lookahead_slots,
             speculative_disable_by_batch_size,
@@ -982,6 +986,7 @@ class SpeculativeConfig:
         self,
         draft_model_config: ModelConfig,
         draft_parallel_config: ParallelConfig,
+        num_speculative_candidates: int,
         num_speculative_tokens: int,
         num_lookahead_slots: int,
         speculative_disable_by_batch_size: Optional[int],
@@ -993,6 +998,8 @@ class SpeculativeConfig:
         Args:
             draft_model_config: ModelConfig for the draft model.
             draft_parallel_config: ParallelConfig for the draft model.
+            num_speculative_candidates: The number of candidates to sample from the
+                draft model before scoring with the target model.
             num_speculative_tokens: The number of tokens to sample from the
                 draft model before scoring with the target model.
             speculative_disable_by_batch_size: Disable speculative
@@ -1003,6 +1010,7 @@ class SpeculativeConfig:
         """
         self.draft_model_config = draft_model_config
         self.draft_parallel_config = draft_parallel_config
+        self.num_speculative_candidates = num_speculative_candidates
         self.num_speculative_tokens = num_speculative_tokens
         self.num_lookahead_slots = num_lookahead_slots
         self.speculative_disable_by_batch_size = \

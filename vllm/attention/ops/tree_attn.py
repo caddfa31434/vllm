@@ -5,9 +5,9 @@ import torch
 import triton
 import triton.language as tl
 import pdb
+from typing import List, Optional, Tuple
 
 if triton.__version__ >= "2.1.0":
-
     @triton.jit
     def _fwd_kernel(
         Q,
@@ -54,7 +54,7 @@ if triton.__version__ >= "2.1.0":
         cur_batch_prompt_len = tl.load(prompt_lens + cur_batch)
 
         block_start_loc = BLOCK_M * start_m
-        # pdb.set_trace()
+
         # initialize offsets
         offs_n = tl.arange(0, BLOCK_N)
         offs_d = tl.arange(0, BLOCK_DMODEL)
@@ -100,8 +100,10 @@ if triton.__version__ >= "2.1.0":
             tree_mask = (
                 cur_step - cur_batch_prompt_len - offs_m[:, None]
             ) % tree_width == 0  # [1, BlockN] - [BlockM, 1] = [BlockM, BlockN]
+
             tree_mask = is_prompt or tree_mask
             mask = tree_mask and (cur_step < cur_batch_ctx_len)
+
             qk = tl.where(mask, qk, -3.4028234663852886e+38)
 
             qk *= sm_scale
@@ -213,3 +215,104 @@ if triton.__version__ >= "2.1.0":
             num_stages=1,
         )
         return
+
+    def create_tree_attention_mask(context_len, prompt_len, max_context_len, tree_width,
+                                num_kv_head, dtype):
+        prompt_mask = torch.zeros((num_kv_head, tree_width, prompt_len),
+                                dtype=dtype)
+        none_mask_value = torch.arange(context_len - prompt_len).repeat(
+            tree_width, 1) - torch.arange(tree_width)[:, None]
+        none_mask_value = none_mask_value % tree_width
+        none_mask_value = none_mask_value == 0
+
+        min_value = torch.finfo(dtype).min
+
+        generate_mask = torch.full(none_mask_value.shape, min_value, dtype=dtype)
+        generate_mask[none_mask_value] = 0
+        generate_mask = generate_mask.unsqueeze(0).repeat(num_kv_head, 1, 1)
+        
+        pad_mask = torch.zeros((num_kv_head, tree_width, max_context_len - context_len),
+                                dtype=dtype)
+        
+        return torch.concat([pad_mask, prompt_mask, generate_mask], dim=2)
+        # return torch.concat([prompt_mask, generate_mask, pad_mask], dim=2)
+
+    def ref_masked_attention(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        scale: float,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        attn_weights = scale * torch.einsum("qhd,khd->hqk", query, key).float()
+        if attn_mask is not None:
+            attn_weights = attn_weights + attn_mask.float()
+
+        attn_weights = torch.softmax(attn_weights, dim=-1).to(value.dtype)
+        out = torch.einsum("hqk,khd->qhd", attn_weights, value)
+        return out
+
+    def ref_query_cached_kv_attention(
+        output: torch.Tensor,
+        query: torch.Tensor,
+        num_queries_per_kv: int,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        block_tables: torch.Tensor,
+        seq_lens: torch.Tensor,
+        scale: float,
+        alibi_slopes: Optional[torch.Tensor],
+        masks: torch.Tensor
+    ) -> None:
+        num_query_heads = query.shape[1]
+        num_kv_heads = value_cache.shape[1]
+        head_size = value_cache.shape[2]
+        block_size = value_cache.shape[3]
+
+        block_tables = block_tables.cpu().tolist()
+        seq_lens = seq_lens.cpu().tolist()
+        num_seqs = len(seq_lens)
+
+        query = query.reshape(num_seqs, -1, num_query_heads, head_size)
+        output = output.reshape(query.shape)
+
+        for i in range(num_seqs):
+            q = query[i]
+            block_table = block_tables[i]
+            seq_len = int(seq_lens[i])
+
+            keys = []
+            values = []
+            for j in range(seq_len):
+                block_number = int(block_table[j // block_size])
+                block_offset = j % block_size
+
+                k = key_cache[block_number, :, :, block_offset, :]
+                k = k.reshape(num_kv_heads, head_size)
+                keys.append(k)
+
+                v = value_cache[block_number, :, :, block_offset]
+                values.append(v)
+            keys = torch.stack(keys, dim=0)
+            values = torch.stack(values, dim=0)
+            if num_queries_per_kv > 1:
+                # Handle MQA and GQA
+                keys = torch.repeat_interleave(keys, num_queries_per_kv, dim=1)
+                values = torch.repeat_interleave(values, num_queries_per_kv, dim=1)
+
+            mask = masks[i,:,:,-seq_len:]
+            # print(f"{mask.shape=}")
+            alibi_bias = None
+            if alibi_slopes is not None:
+                # Create the ALiBi bias used in the paged attention kernel.
+                position_ids = torch.arange(seq_len).int()
+                alibi_bias = (position_ids - seq_len + 1).float()
+                alibi_bias = alibi_slopes.view(-1, 1, 1) * alibi_bias.view(
+                    1, 1, -1)
+                mask += alibi_bias
+            out = ref_masked_attention(q, keys, values, scale, mask)
+            out = out.view(-1, num_query_heads, head_size)
+            output[i].copy_(out, non_blocking=True)
+        output.reshape(-1, num_kv_heads, head_size)
+
+    

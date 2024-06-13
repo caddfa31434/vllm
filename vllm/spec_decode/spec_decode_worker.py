@@ -440,9 +440,16 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             proposals,
         )
 
-        accepted_token_ids, target_logprobs = self._verify_tokens(
+        best_candidate_index, accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_speculative_tokens)
+
+        self._defragment_accepted_kv_blocks(
+            execute_model_req.seq_group_metadata_list, 
+            proposal_scores,
+            proposals, 
+            best_candidate_index,
+            execute_model_req.num_speculative_tokens)
 
         # print(f"{proposals=}")
         # print(f"{proposal_scores=}")
@@ -455,13 +462,24 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             extra_tensor_data=proposal_scores.extra_tensor_data)
 
     @nvtx_range("spec_decode_worker._verify_tokens")
+    def _defragment_accepted_kv_blocks(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        proposal_scores: SpeculativeScores,
+        proposals: SpeculativeProposals,
+        best_candidate_index: int,
+        max_proposal_len: int,
+    ):
+        pass
+
+    @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         proposal_scores: SpeculativeScores,
         proposals: SpeculativeProposals,
         max_proposal_len: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Determine which speculative tokens are accepted using the
         probabilities of each token according to the proposer and scorer models.
 
@@ -527,8 +545,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # metadata.
         accepted_token_ids[original_indices] = accepted_token_ids.clone()
 
-
-        return accepted_token_ids, logprobs
+        return best_candidate_index, accepted_token_ids, logprobs
 
     def _create_output_sampler_list(
         self,

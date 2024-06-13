@@ -108,7 +108,7 @@ class XFormersMetadata(AttentionMetadata, PagedAttentionMetadata):
     _cached_prefill_metadata: Optional["XFormersMetadata"] = None
     _cached_decode_metadata: Optional["XFormersMetadata"] = None
 
-    tree_width: Optional[int] = 1
+    attn_masks: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         # Set during the execution of the first attention op.
@@ -172,7 +172,7 @@ class XFormersMetadata(AttentionMetadata, PagedAttentionMetadata):
             max_decode_seq_len=self.max_decode_seq_len,
             query_start_loc=None,
             seq_start_loc=None,
-            context_lens_tensor=None,
+            context_lens_tensor=self.context_lens_tensor[self.num_prefills:],
             block_tables=self.block_tables[self.num_prefills:],
             use_cuda_graph=self.use_cuda_graph,
         )
@@ -335,7 +335,7 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.scale,
                 self.alibi_slopes,
                 kv_scale,
-                decode_meta.tree_width,
+                decode_meta.attn_masks,
             )
 
         # Reshape the output tensor.

@@ -629,7 +629,7 @@ class ModelRunner:
                 context_lens_tensor=context_lens_tensor,
                 block_tables=block_tables,
                 use_cuda_graph=use_captured_graph,
-                tree_width=1,
+                attn_masks=None,
             )
 
         if self.lora_config:
@@ -819,6 +819,9 @@ class ModelRunner:
         # normal keyword arguments?
         execute_model_kwargs.update(multi_modal_kwargs)
         hidden_states = model_executable(**execute_model_kwargs)
+
+        if(self.model_config.hf_config.architectures[0]=="EagleModel"):
+            return hidden_states
 
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states, sampling_metadata)

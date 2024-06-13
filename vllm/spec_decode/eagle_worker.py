@@ -49,32 +49,6 @@ class EagleWorker(MultiStepWorker):
         self._assert_enough_kv_space(execute_model_req.seq_group_metadata_list,
                                      sample_num * sample_len)
 
-        # Get sample_num * sample_len Outputs.
-        model_outputs_topK = []
-
-        # for sample_idx in range(sample_num):
-        #     # Shallow copy input data so modifications (such as appending tokens)
-        #     # do not cause side-effects.
-        #     copied_seq_group_metadata_list = self._shallow_copy_inputs(
-        #         execute_model_req.seq_group_metadata_list, sample_idx * sample_len)
-        #     copied_execute_model_req = execute_model_req.clone(
-        #         copied_seq_group_metadata_list)
-
-        #     model_outputs = []
-        #     for _ in range(sample_len):
-        #         copied_execute_model_req.extra_outputs = "hidden_states"
-        #         model_output = super().execute_model(
-        #             execute_model_req=copied_execute_model_req)
-        #         model_output = model_output[0]
-
-        #         self._append_new_tokens(model_output,
-        #                                 copied_seq_group_metadata_list)
-        #         model_outputs.append(model_output)
-        #         copied_execute_model_req.extra_inputs = model_output.raw_extra_tensors
-
-        #     model_outputs_topK.append(model_outputs)
-
-        # Step 0
         copied_seq_group_metadata_list = self._shallow_copy_inputs(
             execute_model_req.seq_group_metadata_list, num_lookahead_slot_mapping_dirty_offset = 0)
         copied_execute_model_req = execute_model_req.clone(
@@ -83,9 +57,11 @@ class EagleWorker(MultiStepWorker):
         copied_execute_model_req.extra_outputs = "hidden_states"
         model_output = super().execute_model(
             execute_model_req=copied_execute_model_req)
-        model_output = model_output[0]
 
-        return model_outputs_topK, True
+         # Get sample_num * sample_len Outputs.
+        model_outputs_topK = model_output[0]
+
+        return model_outputs_topK, False
 
     @staticmethod
     def _append_new_tokens(
