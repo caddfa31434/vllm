@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-
+from typing import List, Optional
+from click import Option
 import torch
 
 from vllm.sequence import ExecuteModelRequest, TensorData
@@ -20,6 +21,8 @@ class SpeculativeProposals:
 
     # The valid length of each proposal; can be zero.
     proposal_lens: torch.Tensor
+
+    tree_candidates: Optional[torch.Tensor]
 
     def __repr__(self):
         return (f"SpeculativeProposals("

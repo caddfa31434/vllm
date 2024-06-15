@@ -8,6 +8,7 @@ import pdb
 from typing import List, Optional, Tuple
 
 if triton.__version__ >= "2.1.0":
+
     @triton.jit
     def _fwd_kernel(
         Q,
@@ -216,10 +217,10 @@ if triton.__version__ >= "2.1.0":
         )
         return
 
-    def create_tree_attention_mask(context_len, prompt_len, max_context_len, tree_width,
-                                num_kv_head, dtype):
+    def create_tree_attention_mask(context_len, prompt_len, max_context_len,
+                                   tree_width, num_kv_head, dtype):
         prompt_mask = torch.zeros((num_kv_head, tree_width, prompt_len),
-                                dtype=dtype)
+                                  dtype=dtype)
         none_mask_value = torch.arange(context_len - prompt_len).repeat(
             tree_width, 1) - torch.arange(tree_width)[:, None]
         none_mask_value = none_mask_value % tree_width
@@ -227,13 +228,16 @@ if triton.__version__ >= "2.1.0":
 
         min_value = torch.finfo(dtype).min
 
-        generate_mask = torch.full(none_mask_value.shape, min_value, dtype=dtype)
+        generate_mask = torch.full(none_mask_value.shape,
+                                   min_value,
+                                   dtype=dtype)
         generate_mask[none_mask_value] = 0
         generate_mask = generate_mask.unsqueeze(0).repeat(num_kv_head, 1, 1)
-        
-        pad_mask = torch.zeros((num_kv_head, tree_width, max_context_len - context_len),
-                                dtype=dtype)
-        
+
+        pad_mask = torch.zeros(
+            (num_kv_head, tree_width, max_context_len - context_len),
+            dtype=dtype)
+
         return torch.concat([pad_mask, prompt_mask, generate_mask], dim=2)
         # return torch.concat([prompt_mask, generate_mask, pad_mask], dim=2)
 
@@ -252,18 +256,15 @@ if triton.__version__ >= "2.1.0":
         out = torch.einsum("hqk,khd->qhd", attn_weights, value)
         return out
 
-    def ref_query_cached_kv_attention(
-        output: torch.Tensor,
-        query: torch.Tensor,
-        num_queries_per_kv: int,
-        key_cache: torch.Tensor,
-        value_cache: torch.Tensor,
-        block_tables: torch.Tensor,
-        seq_lens: torch.Tensor,
-        scale: float,
-        alibi_slopes: Optional[torch.Tensor],
-        masks: torch.Tensor
-    ) -> None:
+    def ref_query_cached_kv_attention(output: torch.Tensor,
+                                      query: torch.Tensor,
+                                      num_queries_per_kv: int,
+                                      key_cache: torch.Tensor,
+                                      value_cache: torch.Tensor,
+                                      block_tables: torch.Tensor,
+                                      seq_lens: torch.Tensor, scale: float,
+                                      alibi_slopes: Optional[torch.Tensor],
+                                      masks: torch.Tensor) -> None:
         num_query_heads = query.shape[1]
         num_kv_heads = value_cache.shape[1]
         head_size = value_cache.shape[2]
@@ -298,9 +299,11 @@ if triton.__version__ >= "2.1.0":
             if num_queries_per_kv > 1:
                 # Handle MQA and GQA
                 keys = torch.repeat_interleave(keys, num_queries_per_kv, dim=1)
-                values = torch.repeat_interleave(values, num_queries_per_kv, dim=1)
+                values = torch.repeat_interleave(values,
+                                                 num_queries_per_kv,
+                                                 dim=1)
 
-            mask = masks[i,:,:,-seq_len:]
+            mask = masks[i, :, :, -seq_len:]
             # print(f"{mask.shape=}")
             alibi_bias = None
             if alibi_slopes is not None:
@@ -314,5 +317,3 @@ if triton.__version__ >= "2.1.0":
             out = out.view(-1, num_query_heads, head_size)
             output[i].copy_(out, non_blocking=True)
         output.reshape(-1, num_kv_heads, head_size)
-
-    

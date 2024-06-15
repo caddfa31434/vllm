@@ -186,16 +186,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         self.rejection_sampler.init_gpu_tensors(self.rank)
 
         if self.proposer_worker.model_config.hf_config.model_type == "eagle":
-            self.scorer = EagleScorer(
-                scorer_worker=self.scorer_worker,
-                device=self.device,
-                vocab_size=self._vocab_size)
-        else :
+            self.scorer = EagleScorer(scorer_worker=self.scorer_worker,
+                                      device=self.device,
+                                      vocab_size=self._vocab_size)
+        else:
             self.scorer = BatchExpansionTop1Scorer(
                 scorer_worker=self.scorer_worker,
                 device=self.device,
                 vocab_size=self._vocab_size)
-
 
         self._configure_model_sampler_for_spec_decode()
 
@@ -406,8 +404,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         if no_spec:
             self.scorer_worker.execute_model()
 
-        num_steps = num_speculative_tokens if isinstance(self.proposer_worker,
-                                                      MultiStepWorker) else 1
+        num_steps = num_speculative_tokens if isinstance(
+            self.proposer_worker, MultiStepWorker) else 1
         for _ in range(max(num_steps, 1)):
             self.proposer_worker.execute_model()
 
@@ -445,10 +443,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             proposals, execute_model_req.num_speculative_tokens)
 
         self._defragment_accepted_kv_blocks(
-            execute_model_req.seq_group_metadata_list, 
-            proposal_scores,
-            proposals, 
-            best_candidate_index,
+            execute_model_req.seq_group_metadata_list, proposal_scores,
+            proposals, best_candidate_index,
             execute_model_req.num_speculative_tokens)
 
         # print(f"{proposals=}")
@@ -505,6 +501,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Get probabilities of target model, excluding bonus token.
         proposal_verifier_probs = proposal_scores.probs[spec_indices, :, :-1]
 
+        proposal_verifier_token_ids = proposal_scores.token_ids[spec_indices, :, :]
+
         # Get non-speculative sampled tokens from target model. non-speculative sampled tokens needs no N candidate
         non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, 0]
 
@@ -521,6 +519,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
         accepted_token_ids, best_candidate_index = self.rejection_sampler.forward_v2(
             target_probs=proposal_verifier_probs,
+            target_token_ids=proposal_verifier_token_ids,
             bonus_token_ids=bonus_token_ids,
             draft_probs=proposal_probs,
             draft_token_ids=proposal_token_ids,
@@ -533,13 +532,18 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         non_spec_token_ids[:, 1:] = -1
         accepted_token_ids = torch.cat(
             [accepted_token_ids, non_spec_token_ids])
-        
+
         # Select log probabilities according to best_candidate_index
-        logprobs = proposal_scores.logprobs[torch.arange(proposal_scores.logprobs.size(0)), best_candidate_index, :, :]
+        logprobs = proposal_scores.logprobs[
+            torch.arange(proposal_scores.logprobs.size(0)),
+            best_candidate_index, :, :]
 
         # Select proposal_scores.extra_tensor_data according to best_candidate_index
         for k in proposal_scores.extra_tensor_data:
-            proposal_scores.extra_tensor_data[k] = proposal_scores.extra_tensor_data[k][torch.arange(proposal_scores.logprobs.size(0)), best_candidate_index, :, ]
+            proposal_scores.extra_tensor_data[
+                k] = proposal_scores.extra_tensor_data[k][
+                    torch.arange(proposal_scores.logprobs.size(0)),
+                    best_candidate_index, :, ]
 
         # Rearrange so that results are in the order of the original seq group
         # metadata.

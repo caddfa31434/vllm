@@ -10,6 +10,7 @@ from vllm.spec_decode.interfaces import (SpeculativeProposals,
 from vllm.spec_decode.proposer_worker_base import ProposerWorkerBase
 from vllm.spec_decode.util import sampler_output_to_torch, sampler_output_to_torch_v2
 
+
 class TopKProposer(SpeculativeProposer):
     """Helper class which separates out sequences which would exceed the max
     model length when speculated upon.
@@ -71,7 +72,7 @@ class TopKProposer(SpeculativeProposer):
                 num_speculative_tokens=proposal_len,
                 extra_inputs=execute_model_req.extra_inputs,
             )
-            maybe_sampler_output, transposed = self._worker.sampler_output(
+            maybe_sampler_output, transposed, tree_candidates = self._worker.sampler_output(
                 execute_model_req=nonzero_execute_model_req,
                 sample_num=proposal_num,
                 sample_len=proposal_len,
@@ -104,6 +105,7 @@ class TopKProposer(SpeculativeProposer):
             proposal_token_ids=proposal_tokens,
             proposal_probs=proposal_probs,
             proposal_lens=proposal_lens,
+            tree_candidates=tree_candidates
         )
 
         return proposals

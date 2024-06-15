@@ -16,7 +16,9 @@ from .utils import (assert_logprobs_dict_allclose, create_batch,
                     patch_execute_model_with_seeds, zero_kv_cache)
 
 import os
+
 os.environ['VLLM_ATTENTION_BACKEND'] = 'XFORMERS'
+
 
 @pytest.mark.parametrize("batch_size", list(range(1, 2)))
 def test_prepare_prompt(batch_size):
@@ -86,15 +88,17 @@ def test_prepare_prompt(batch_size):
 
     tok = AutoTokenizer.from_pretrained(model_name)
 
-    prompts = [
-        tok.encode(prompt_texts[0]),
-        tok.encode(prompt_texts[1])
-    ]
+    prompts = [tok.encode(prompt_texts[0]), tok.encode(prompt_texts[1])]
 
-    tree_candidates = [
-        [ 518, 1024, 13, 29871, 322, 29962, 322, 29889, 322, 590, 590, 13, 590, 322, 13, 29871, 590, 306, 322, 590, 590, 590, 338, 306, 1024, 5121],
-        [ 278, 6673, 2343, 9939, 11822, 616, 310, 322, 310, 278, 6673, 5874, 310, 6673, 5874, 2343, 278, 6673, 278, 6673,278, 310, 616, 1058, 278, 6673]
-    ]
+    tree_candidates = [[
+        518, 1024, 13, 29871, 322, 29962, 322, 29889, 322, 590, 590, 13, 590,
+        322, 13, 29871, 590, 306, 322, 590, 590, 590, 338, 306, 1024, 5121
+    ],
+                       [
+                           278, 6673, 2343, 9939, 11822, 616, 310, 322, 310,
+                           278, 6673, 5874, 310, 6673, 5874, 2343, 278, 6673,
+                           278, 6673, 278, 310, 616, 1058, 278, 6673
+                       ]]
 
     num_candidates = 26
     final_prompt_lens = [len(prompt) + num_candidates for prompt in prompts]
@@ -110,8 +114,10 @@ def test_prepare_prompt(batch_size):
     # hard codes for mock inputs
     single_step_seq_group[0].is_prompt = False
     single_step_seq_group[1].is_prompt = False
-    single_step_seq_group[0].seq_data[0].candidate_token_ids=tree_candidates[0]
-    single_step_seq_group[1].seq_data[1].candidate_token_ids=tree_candidates[1]
+    single_step_seq_group[0].seq_data[0].candidate_token_ids = tree_candidates[
+        0]
+    single_step_seq_group[1].seq_data[1].candidate_token_ids = tree_candidates[
+        1]
 
     expected_output = worker.execute_model(
         execute_model_req=ExecuteModelRequest(

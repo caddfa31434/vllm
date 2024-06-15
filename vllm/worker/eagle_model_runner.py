@@ -45,7 +45,6 @@ class EagleSpeculativeModelRunner(ModelRunner):
                          is_driver_worker=is_driver_worker,
                          vision_language_config=vision_language_config)
 
-
     @torch.inference_mode()
     def execute_model(
         self,

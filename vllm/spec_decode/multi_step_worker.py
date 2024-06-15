@@ -71,7 +71,8 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
             # Shallow copy input data so modifications (such as appending tokens)
             # do not cause side-effects.
             copied_seq_group_metadata_list = self._shallow_copy_inputs(
-                execute_model_req.seq_group_metadata_list, sample_idx * sample_len)
+                execute_model_req.seq_group_metadata_list,
+                sample_idx * sample_len)
             copied_execute_model_req = execute_model_req.clone(
                 copied_seq_group_metadata_list)
 
@@ -86,7 +87,7 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
                 self._append_new_tokens(model_output,
                                         copied_seq_group_metadata_list)
                 model_outputs.append(model_output)
-                
+
             model_outputs_topK.append(model_outputs)
 
         return model_outputs_topK, True

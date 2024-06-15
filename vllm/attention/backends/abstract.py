@@ -59,6 +59,8 @@ class AttentionMetadata:
     num_prefills: int
     # Number of prefill tokens.
     num_prefill_tokens: int
+    # # Total number of decode requests.
+    # num_decodes: Optional[int]
     # Number of decode tokens. Note that it is equivalent to the number of
     # decode requests.
     num_decode_tokens: int

@@ -14,7 +14,7 @@ def copy_kernel(x_ptr, z_ptr, n, bs: tl.constexpr):
 
 x = torch.arange(0, 10).unsqueeze(1).cuda().contiguous().float()
 z = torch.zeros_like(x)
-copy_kernel[(3,)](x, z, n=10, bs=4)
+copy_kernel[(3, )](x, z, n=10, bs=4)
 
 print(x)
 print(z)

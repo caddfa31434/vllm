@@ -315,10 +315,7 @@ class ModelRunner:
                     # TODO(sang): Fix it.
 
                     # TODO(czd): I think no need a special logic for draft right now
-                    if not self.is_driver_worker:
-                         context_len = seq_data.get_num_computed_tokens()
-                    else:
-                       context_len = seq_data.get_len() - 1
+                    context_len = seq_data.get_num_computed_tokens()
 
                 seq_len = min(
                     seq_data.get_len(),
@@ -328,7 +325,8 @@ class ModelRunner:
                 else:
                     # Optimization. get_token_ids requires the entire copy of
                     # tokens.
-                    tokens = [seq_data.get_last_token_id()]
+                    # tokens = [seq_data.get_last_token_id()]
+                    tokens = seq_data.get_uncomputed_token_ids()
 
                 # Prefix cache was hit.
                 # Prefix is not supported with sliding_window
@@ -423,7 +421,7 @@ class ModelRunner:
                     decode_only = False
                     prefill_seq_lens.append(seq_len)
                 else:
-                    assert query_len == 1, (
+                    assert query_len >= 1, (
                         "seq_len: {}, context_len: {}, query_len: {}".format(
                             seq_len, context_len, query_len))
                     num_decode_tokens += query_len
@@ -820,7 +818,7 @@ class ModelRunner:
         execute_model_kwargs.update(multi_modal_kwargs)
         hidden_states = model_executable(**execute_model_kwargs)
 
-        if(self.model_config.hf_config.architectures[0]=="EagleModel"):
+        if (self.model_config.hf_config.architectures[0] == "EagleModel") or (attn_metadata.num_decode_tokens > 0 and attn_metadata.max_query_len > 1):
             return hidden_states
 
         # Compute the logits.

@@ -283,6 +283,7 @@ def test_rejection_sampling_approximates_target_distribution(
             relative_change_in_distance_wrt_reference *
             expected_improvement_multiplier)
 
+
 def get_ratio_first_to_last(elements: List[float]) -> float:
     return elements[0] / elements[-1]
 
@@ -391,9 +392,8 @@ class _CorrectnessTestHelper:
         return hist.hist
 
 
-
 def mock_causal_accepted_tensor_v2(
-            k: int, last_accepted_indices: torch.Tensor) -> torch.Tensor:
+        k: int, last_accepted_indices: torch.Tensor) -> torch.Tensor:
     """Generate an "accepted" tensor which should yield causally-accepted tokens
     up to last accepted indices.
 
@@ -410,27 +410,28 @@ def mock_causal_accepted_tensor_v2(
     # Sprinkle accepted values after the contiguous initial accepted values.
     # This replicates the behavior of rejection sampling, which may "accept"
     # a token that cannot be accepted because of causality.
-    sprinkle_candidates = (
-        torch.arange(k).expand(batch_size, num_candidate, k) >
-        last_accepted_indices.unsqueeze(-1).broadcast_to(batch_size, num_candidate, k) + 1)
+    sprinkle_candidates = (torch.arange(k).expand(batch_size, num_candidate, k)
+                           > last_accepted_indices.unsqueeze(-1).broadcast_to(
+                               batch_size, num_candidate, k) + 1)
     sprinkle = torch.rand(batch_size, num_candidate, k, device="cuda") > 0.5
     accepted[sprinkle_candidates] = sprinkle[sprinkle_candidates]
     return accepted
+
 
 @pytest.mark.parametrize("seed", list(range(10)))
 # @pytest.mark.parametrize("seed", list(range(1)))
 @pytest.mark.parametrize(
     "which_tokens_accepted",
     ["all_tokens_accepted", "no_tokens_accepted", "some_tokens_accepted"])
-    # ["all_tokens_accepted", "no_tokens_accepted",])
-    # ["some_tokens_accepted"])
+# ["all_tokens_accepted", "no_tokens_accepted",])
+# ["some_tokens_accepted"])
 @pytest.mark.parametrize("disable_bonus_tokens", [True, False])
 # @pytest.mark.parametrize("disable_bonus_tokens", [True])
 @pytest.mark.parametrize("device", CUDA_DEVICES)
 @torch.inference_mode()
 def test_correct_output_format_v2(which_tokens_accepted: str,
-                               disable_bonus_tokens: bool, seed: int,
-                               device: str):
+                                  disable_bonus_tokens: bool, seed: int,
+                                  device: str):
     """Verify the output has correct format given predetermined accepted matrix for v2."""
     set_random_seed(seed)
     torch.set_default_device(device)
@@ -442,14 +443,24 @@ def test_correct_output_format_v2(which_tokens_accepted: str,
 
     if which_tokens_accepted == "all_tokens_accepted":
         accepted = mock_causal_accepted_tensor_v2(
-            k, -1 + k * torch.ones((batch_size, num_candidate, ), dtype=torch.long))
+            k, -1 + k * torch.ones(
+                (
+                    batch_size,
+                    num_candidate,
+                ), dtype=torch.long))
     elif which_tokens_accepted == "no_tokens_accepted":
         accepted = mock_causal_accepted_tensor_v2(
-            k, -torch.ones((batch_size, num_candidate, ), dtype=torch.long))
+            k, -torch.ones((
+                batch_size,
+                num_candidate,
+            ), dtype=torch.long))
     elif which_tokens_accepted == "some_tokens_accepted":
         last_accepted_indices = torch.randint(low=-1,
                                               high=k,
-                                              size=(batch_size, num_candidate, ))
+                                              size=(
+                                                  batch_size,
+                                                  num_candidate,
+                                              ))
         accepted = mock_causal_accepted_tensor_v2(k, last_accepted_indices)
     else:
         raise AssertionError()
@@ -486,16 +497,23 @@ def test_correct_output_format_v2(which_tokens_accepted: str,
 
     if which_tokens_accepted == "all_tokens_accepted":
         # Expect all tokens to be equal to draft tokens.
-        selected_draft_tokens = draft_token_ids[torch.arange(draft_token_ids.size(0)), best_candidate_index, :]
-        assert torch.equal(best_output_token_ids[:, :-1], selected_draft_tokens)
+        selected_draft_tokens = draft_token_ids[
+            torch.arange(draft_token_ids.size(0)), best_candidate_index, :]
+        assert torch.equal(best_output_token_ids[:, :-1],
+                           selected_draft_tokens)
 
         # Expect all bonus tokens to be included.
-        selected_bonus_tokens = expected_bonus_token_ids[torch.arange(expected_bonus_token_ids.size(0)), best_candidate_index, :]
-        assert torch.equal(best_output_token_ids[:, -1:], selected_bonus_tokens)
+        selected_bonus_tokens = expected_bonus_token_ids[
+            torch.arange(expected_bonus_token_ids.size(0)),
+            best_candidate_index, :]
+        assert torch.equal(best_output_token_ids[:, -1:],
+                           selected_bonus_tokens)
     elif which_tokens_accepted == "no_tokens_accepted":
         # Expect first token to be equal to recovered tokens.
-        selected_recovered_tokens = recovered_token_ids[torch.arange(recovered_token_ids.size(0)), best_candidate_index, 0]
-        assert torch.equal(best_output_token_ids[:, 0], selected_recovered_tokens)
+        selected_recovered_tokens = recovered_token_ids[
+            torch.arange(recovered_token_ids.size(0)), best_candidate_index, 0]
+        assert torch.equal(best_output_token_ids[:, 0],
+                           selected_recovered_tokens)
 
         # Expect everything else to be -1.
         assert torch.equal(best_output_token_ids[:, 1:],
@@ -504,16 +522,22 @@ def test_correct_output_format_v2(which_tokens_accepted: str,
         recovered_plus_bonus = torch.cat(
             (recovered_token_ids, expected_bonus_token_ids), dim=-1)
         # Assert first rejected token is a recovered token or bonus token.
-        selected_recovered_plus_bonus = recovered_plus_bonus[torch.arange(recovered_plus_bonus.size(0)), best_candidate_index, :]
+        selected_recovered_plus_bonus = recovered_plus_bonus[
+            torch.arange(recovered_plus_bonus.size(0)),
+            best_candidate_index, :]
         assert torch.equal(
-            selected_recovered_plus_bonus[torch.arange(0, batch_size),
-                                 last_accepted_indices[torch.arange(last_accepted_indices.size(0)), best_candidate_index] + 1],
-            best_output_token_ids[torch.arange(0, batch_size),
-                                  last_accepted_indices[torch.arange(last_accepted_indices.size(0)), best_candidate_index] + 1])
+            selected_recovered_plus_bonus[
+                torch.arange(0, batch_size), last_accepted_indices[
+                    torch.arange(last_accepted_indices.size(0)),
+                    best_candidate_index] + 1], best_output_token_ids[
+                        torch.arange(0, batch_size), last_accepted_indices[
+                            torch.arange(last_accepted_indices.size(0)),
+                            best_candidate_index] + 1])
 
         # Assert every subsequent token is -1.
-        subsequent_mask = torch.arange(0, k + 1).expand(
-            batch_size, k + 1) >= (last_accepted_indices[torch.arange(last_accepted_indices.size(0)), best_candidate_index] + 2).unsqueeze(-1)
+        subsequent_mask = torch.arange(0, k + 1).expand(batch_size, k + 1) >= (
+            last_accepted_indices[torch.arange(last_accepted_indices.size(0)),
+                                  best_candidate_index] + 2).unsqueeze(-1)
         assert torch.all(best_output_token_ids[subsequent_mask] == -1)
 
 
@@ -523,13 +547,23 @@ def test_correct_output_format_v2(which_tokens_accepted: str,
 @pytest.mark.parametrize("num_candidate", list(range(1, 6)))
 @pytest.mark.parametrize("device", CUDA_DEVICES)
 @torch.inference_mode()
-def test_no_crash_with_varying_dims_v2(k: int, vocab_size: int, batch_size: int, num_candidate: int, device: str):
+def test_no_crash_with_varying_dims_v2(k: int, vocab_size: int,
+                                       batch_size: int, num_candidate: int,
+                                       device: str):
     torch.set_default_device(device)
     rejection_sampler = RejectionSampler()
     rejection_sampler.init_gpu_tensors(rank=0)
 
-    draft_probs = torch.rand(batch_size, num_candidate, k, vocab_size, dtype=torch.float32)
-    target_probs = torch.rand(batch_size, num_candidate, k, vocab_size, dtype=torch.float32)
+    draft_probs = torch.rand(batch_size,
+                             num_candidate,
+                             k,
+                             vocab_size,
+                             dtype=torch.float32)
+    target_probs = torch.rand(batch_size,
+                              num_candidate,
+                              k,
+                              vocab_size,
+                              dtype=torch.float32)
     bonus_token_ids = torch.randint(low=0,
                                     high=vocab_size,
                                     size=(batch_size, num_candidate, 1),
@@ -539,7 +573,8 @@ def test_no_crash_with_varying_dims_v2(k: int, vocab_size: int, batch_size: int,
                                     size=(batch_size, num_candidate, k),
                                     dtype=torch.int64)
 
-    rejection_sampler.forward_v2(target_probs, bonus_token_ids, draft_probs, draft_token_ids)
+    rejection_sampler.forward_v2(target_probs, bonus_token_ids, draft_probs,
+                                 draft_token_ids)
 
 
 @pytest.mark.parametrize("above_or_below_vocab_range", ["above", "below"])
@@ -548,7 +583,7 @@ def test_no_crash_with_varying_dims_v2(k: int, vocab_size: int, batch_size: int,
 @pytest.mark.parametrize("device", CUDA_DEVICES)
 @torch.inference_mode()
 def test_raises_when_vocab_oob_v2(above_or_below_vocab_range: str,
-                               which_token_ids: str, device: str):
+                                  which_token_ids: str, device: str):
     num_candidate = 3
     k = 3
     batch_size = 5
@@ -558,8 +593,16 @@ def test_raises_when_vocab_oob_v2(above_or_below_vocab_range: str,
     rejection_sampler = RejectionSampler(strict_mode=True)
     rejection_sampler.init_gpu_tensors(rank=0)
 
-    draft_probs = torch.rand(batch_size, num_candidate, k, vocab_size, dtype=torch.float32)
-    target_probs = torch.rand(batch_size, num_candidate, k, vocab_size, dtype=torch.float32)
+    draft_probs = torch.rand(batch_size,
+                             num_candidate,
+                             k,
+                             vocab_size,
+                             dtype=torch.float32)
+    target_probs = torch.rand(batch_size,
+                              num_candidate,
+                              k,
+                              vocab_size,
+                              dtype=torch.float32)
     bonus_token_ids = torch.randint(low=0,
                                     high=vocab_size,
                                     size=(batch_size, num_candidate, 1),
@@ -587,5 +630,5 @@ def test_raises_when_vocab_oob_v2(above_or_below_vocab_range: str,
     oob_token_ids[0][0][0] = rogue_token_id
 
     with pytest.raises(AssertionError):
-        rejection_sampler.forward_v2(target_probs, bonus_token_ids, draft_probs, draft_token_ids)
-
+        rejection_sampler.forward_v2(target_probs, bonus_token_ids,
+                                     draft_probs, draft_token_ids)

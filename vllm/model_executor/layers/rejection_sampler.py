@@ -286,17 +286,21 @@ class RejectionSampler(nn.Module):
 
         shape = [batch_size, k + num_bonus_tokens]
         """
-        bonus_token_ids = bonus_token_ids.squeeze() # 将 bonus_token_ids 的维度压缩（去掉维度为 1 的部分），使其变为一维。
-        batch_size, k = recovered_token_ids.shape 
+        bonus_token_ids = bonus_token_ids.squeeze(
+        )  # 将 bonus_token_ids 的维度压缩（去掉维度为 1 的部分），使其变为一维。
+        batch_size, k = recovered_token_ids.shape
 
         # Determine the index of the first False value for each row. 这部分代码确定每行中第一个 False 值的索引（即 token 被拒绝的位置）。对于没有任何 False 值的行，将其索引设置为 k（即序列长度）。
         limits = (accepted == 0).max(1).indices
         limits[~(accepted == 0).any(1)] = k
 
         # Create masks using the indices. 创建用于掩码的索引
-        indices = torch.arange(k, device=accepted.device).unsqueeze(0) # indices 是从 0 到 k-1 的索引数组，形状为 [1, k]
-        accepted_mask = indices < limits.unsqueeze(1) # accepted_mask 是一个布尔掩码，用于标记哪些 token 是被接受的
-        after_false_mask = indices == limits.unsqueeze(1) # after_false_mask 是一个布尔掩码，用于标记第一个被拒绝 token 的位置
+        indices = torch.arange(k, device=accepted.device).unsqueeze(
+            0)  # indices 是从 0 到 k-1 的索引数组，形状为 [1, k]
+        accepted_mask = indices < limits.unsqueeze(
+            1)  # accepted_mask 是一个布尔掩码，用于标记哪些 token 是被接受的
+        after_false_mask = indices == limits.unsqueeze(
+            1)  # after_false_mask 是一个布尔掩码，用于标记第一个被拒绝 token 的位置
 
         # Create an extended output tensor # 创建一个扩展的输出张量 output_with_bonus_tokens，其形状为 [batch_size, k + num_bonus_tokens]，初始值为 -1。
         output_with_bonus_tokens = -torch.ones(
@@ -305,7 +309,7 @@ class RejectionSampler(nn.Module):
             device=accepted.device)
         output = output_with_bonus_tokens[:, :k]
 
-        # Fill in the first k columns of the output tensor using masks and data 
+        # Fill in the first k columns of the output tensor using masks and data
         # tensors. 这部分代码使用 accepted_mask 掩码和 draft_token_ids 数据填充输出张量的前 k 列。torch.where 函数会根据 accepted_mask 的值来选择元素：如果 accepted_mask 为 True，则选择 draft_token_ids 中对应的值。如果 accepted_mask 为 False，则选择值 -1。
         output[:, :k] = torch.where(accepted_mask, draft_token_ids,
                                     -torch.ones_like(draft_token_ids))
@@ -337,6 +341,7 @@ class RejectionSampler(nn.Module):
     def forward_v2(
         self,
         target_probs: torch.Tensor,
+        target_token_ids: torch.Tensor,
         bonus_token_ids: torch.Tensor,
         draft_probs: torch.Tensor,
         draft_token_ids: torch.Tensor,
@@ -380,7 +385,7 @@ class RejectionSampler(nn.Module):
         """
         if self._strict_mode:
             self._raise_if_incorrect_shape_v2(target_probs, bonus_token_ids,
-                                           draft_probs, draft_token_ids)
+                                              draft_probs, draft_token_ids)
             self._raise_if_incorrect_dtype(target_probs, bonus_token_ids,
                                            draft_probs, draft_token_ids)
             self._raise_if_inconsistent_device(target_probs, bonus_token_ids,
@@ -389,18 +394,35 @@ class RejectionSampler(nn.Module):
                                                bonus_token_ids,
                                                draft_token_ids)
 
-        accepted, recovered_token_ids = self._batch_modified_rejection_sampling_v2(
-            target_probs,
-            draft_probs,
-            draft_token_ids,
-        )
+        # Find the tokens that match the maximum logits for each position in the sequence
+        posterior_mask = (target_token_ids == draft_token_ids).int()
+        candidates_accept_length = (torch.cumprod(posterior_mask, dim=-1)).sum(dim=-1)
+        accept_length = candidates_accept_length.max(dim=1).values
+        best_candidate_index = torch.argmax(candidates_accept_length, dim=-1).to(torch.long)
+        output_token_ids = draft_token_ids[tuple(range(len(accept_length))), best_candidate_index.tolist()]
+        output_token_ids = torch.zeros((target_token_ids.shape[0], target_token_ids.shape[-1]), dtype=int) - 1 
 
-        output_token_ids, best_candidate_index = self._create_output_v2(
-            accepted,
-            recovered_token_ids,
-            draft_token_ids,
-            bonus_token_ids,
-        )
+        for i in range(target_token_ids.shape[0]):
+            draft_slice = draft_token_ids[i, best_candidate_index[i], :accept_length[i]]
+            target_slice = target_token_ids[i, best_candidate_index[i], accept_length[i]].unsqueeze(0)
+            combined_slice = torch.cat((draft_slice, target_slice), dim=0)
+            padded_output_token_ids = torch.zeros(5) - 1
+            length_to_copy = min(combined_slice.size(0), 5)
+            padded_output_token_ids[:length_to_copy] = combined_slice[:length_to_copy]
+            output_token_ids[i] = padded_output_token_ids
+
+        # accepted, recovered_token_ids = self._batch_modified_rejection_sampling_v2(
+        #     target_probs,
+        #     draft_probs,
+        #     draft_token_ids,
+        # )
+
+        # output_token_ids, best_candidate_index = self._create_output_v2(
+        #     accepted,
+        #     recovered_token_ids,
+        #     draft_token_ids,
+        #     bonus_token_ids,
+        # )
 
         return output_token_ids, best_candidate_index
 
@@ -424,22 +446,25 @@ class RejectionSampler(nn.Module):
 
         # shape [batch_size, num_candidate, k]
         accepted = self._get_accepted_v2(target_probs, draft_probs,
-                                    draft_token_ids)
+                                         draft_token_ids)
 
         recovered_probs = self._get_recovered_probs_v2(
-            target_probs, draft_probs).reshape(batch_size * num_candidate * k, vocab_size)
+            target_probs, draft_probs).reshape(batch_size * num_candidate * k,
+                                               vocab_size)
 
         # NOTE: the recovered_probs are overwritten by this method.
         recovered_token_ids = _multinomial(recovered_probs,
-                                        num_samples=1).reshape(
-                                            batch_size, num_candidate, k)
-                                        
+                                           num_samples=1).reshape(
+                                               batch_size, num_candidate, k)
+
         return accepted, recovered_token_ids
 
     def _get_accepted_v2(
             self,
-            target_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
-            draft_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            target_probs: torch.
+        Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_probs: torch.
+        Tensor,  # [batch_size, num_candidate, k, vocab_size]
             draft_token_ids: torch.Tensor,  # [batch_size,num_candidate, k]
     ) -> torch.Tensor:
         r"""Create bool matrix over the proposed draft tokens. If
@@ -465,14 +490,15 @@ class RejectionSampler(nn.Module):
         batch_size, num_candidate, k, _ = draft_probs.shape
         batch_indices = torch.arange(batch_size,
                                      device=target_probs.device)[:, None, None]
-        candidate_indices = torch.arange(num_candidate, device=target_probs.device)[:, None]
+        candidate_indices = torch.arange(num_candidate,
+                                         device=target_probs.device)[:, None]
         probs_indices = torch.arange(k, device=target_probs.device)
 
         # shape [batch_size, num_candidate, k]
-        selected_draft_probs = draft_probs[batch_indices, candidate_indices, 
+        selected_draft_probs = draft_probs[batch_indices, candidate_indices,
                                            probs_indices, draft_token_ids]
 
-       # shape [batch_size, num_candidate, k]
+        # shape [batch_size, num_candidate, k]
         selected_target_probs = target_probs[batch_indices, candidate_indices,
                                              probs_indices, draft_token_ids]
 
@@ -491,8 +517,10 @@ class RejectionSampler(nn.Module):
 
     def _get_recovered_probs_v2(
             self,
-            target_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
-            draft_probs: torch.Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            target_probs: torch.
+        Tensor,  # [batch_size, num_candidate, k, vocab_size]
+            draft_probs: torch.
+        Tensor,  # [batch_size, num_candidate, k, vocab_size]
     ) -> torch.Tensor:
         r"""Create a probability distribution for each proposed token which can
         be sampled if the proposed token is rejected.
@@ -532,18 +560,20 @@ class RejectionSampler(nn.Module):
         # TODO(cade): Can we use logprobs instead of probs, and avoid the
         # division-by-zero errors without introducing distribution drift?
 
-         # shape [batch_size, num_candidate, k, vocab_size]
+        # shape [batch_size, num_candidate, k, vocab_size]
         f = torch.clamp(difference, min=self._smallest_positive_value)
         # shape [batch_size, num_candidate, k, vocab_size]
-        recovered_probs = f / torch.sum(f, dim=-1).reshape(batch_size, num_candidate , k, 1)
+        recovered_probs = f / torch.sum(f, dim=-1).reshape(
+            batch_size, num_candidate, k, 1)
         return recovered_probs
 
     def _create_output_v2(
-            self,
-            accepted: torch.Tensor,  # [batch_size, num_candidate, k]
-            recovered_token_ids: torch.Tensor,  # [batch_size, num_candidate, k]
-            draft_token_ids: torch.Tensor,  # [batch_size, num_candidate, k]
-            bonus_token_ids: torch.Tensor,  # [batch_size, num_candidate, num_bonus_tokens, 1]
+        self,
+        accepted: torch.Tensor,  # [batch_size, num_candidate, k]
+        recovered_token_ids: torch.Tensor,  # [batch_size, num_candidate, k]
+        draft_token_ids: torch.Tensor,  # [batch_size, num_candidate, k]
+        bonus_token_ids: torch.
+        Tensor,  # [batch_size, num_candidate, num_bonus_tokens, 1]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Format output. 
         Returns:
@@ -563,7 +593,8 @@ class RejectionSampler(nn.Module):
         limits[~(accepted == 0).any(2)] = k
 
         # Create masks using the indices.
-        indices = torch.arange(k, device=accepted.device).unsqueeze(0).unsqueeze(0)
+        indices = torch.arange(
+            k, device=accepted.device).unsqueeze(0).unsqueeze(0)
         accepted_mask = indices < limits.unsqueeze(2)
         after_false_mask = indices == limits.unsqueeze(2)
 
@@ -571,20 +602,17 @@ class RejectionSampler(nn.Module):
         output_with_bonus_tokens = -torch.ones(
             (batch_size, num_candidate, k + num_bonus_tokens),
             dtype=self.token_id_dtype,
-            device=accepted.device
-        )
+            device=accepted.device)
         output = output_with_bonus_tokens[:, :, :k]
 
         # Fill in the first k columns of the output tensor using masks and data tensors.
         output[:, :, :k] = torch.where(accepted_mask, draft_token_ids,
-                                    -torch.ones_like(draft_token_ids))
+                                       -torch.ones_like(draft_token_ids))
 
         # Fill the last column with bonus tokens.
         output_with_bonus_tokens[:, :, -num_bonus_tokens:] = torch.where(
-            output[:, :, -1:] != -1,
-            bonus_token_ids,
-            -torch.ones_like(bonus_token_ids)
-        )
+            output[:, :, -1:] != -1, bonus_token_ids,
+            -torch.ones_like(bonus_token_ids))
 
         # We disable bonus tokens if necessary.
         if self._disable_bonus_tokens:
@@ -592,8 +620,7 @@ class RejectionSampler(nn.Module):
 
         # Fill the recovered token ids.
         output.mul_(~after_false_mask).add_(
-            recovered_token_ids.mul(after_false_mask)
-        )
+            recovered_token_ids.mul(after_false_mask))
 
         # Determine the length of accepted tokens for each candidate.
         accepted_lengths = accepted_mask.sum(dim=2)
@@ -602,8 +629,10 @@ class RejectionSampler(nn.Module):
         best_candidate_index = accepted_lengths.argmax(dim=1)
 
         # Extract the best candidate sequences.
-        best_accepted = accepted[torch.arange(batch_size), best_candidate_index]
-        best_output_with_bonus_tokens = output_with_bonus_tokens[torch.arange(batch_size), best_candidate_index]
+        best_accepted = accepted[torch.arange(batch_size),
+                                 best_candidate_index]
+        best_output_with_bonus_tokens = output_with_bonus_tokens[
+            torch.arange(batch_size), best_candidate_index]
 
         # Update the token statistics for the best candidates.
         # FIXME: Seems error
@@ -621,7 +650,7 @@ class RejectionSampler(nn.Module):
         draft_token_ids: torch.Tensor,
     ) -> None:
         (target_batch_size, num_target_probs,
-        target_vocab_size) = target_probs.shape
+         target_vocab_size) = target_probs.shape
         bonus_batch_size, num_bonus_tokens = bonus_token_ids.shape
         draft_batch_size, num_draft_probs, draft_vocab_size = draft_probs.shape
         draft_token_ids_batch_size, num_draft_token_ids = draft_token_ids.shape
@@ -644,8 +673,8 @@ class RejectionSampler(nn.Module):
         draft_probs: torch.Tensor,
         draft_token_ids: torch.Tensor,
     ) -> None:
-        (target_batch_size, num_candidate,
-         num_target_probs, target_vocab_size) = target_probs.shape
+        (target_batch_size, num_candidate, num_target_probs,
+         target_vocab_size) = target_probs.shape
         bonus_batch_size, num_candidate, num_bonus_tokens = bonus_token_ids.shape
         draft_batch_size, num_candidate, num_draft_probs, draft_vocab_size = draft_probs.shape
         draft_token_ids_batch_size, num_candidate, num_draft_token_ids = draft_token_ids.shape
@@ -661,7 +690,6 @@ class RejectionSampler(nn.Module):
         assert bonus_batch_size == target_batch_size
         assert num_bonus_tokens == self._num_bonus_tokens
 
-
     def _raise_if_incorrect_dtype(
         self,
         target_probs: torch.Tensor,
@@ -670,9 +698,9 @@ class RejectionSampler(nn.Module):
         draft_token_ids: torch.Tensor,
     ) -> None:
         assert all(probs.dtype == self.probs_dtype
-                for probs in [target_probs, draft_probs])
+                   for probs in [target_probs, draft_probs])
         assert all(token_ids.dtype == self.token_id_dtype
-                for token_ids in [bonus_token_ids, draft_token_ids])
+                   for token_ids in [bonus_token_ids, draft_token_ids])
 
     def _raise_if_inconsistent_device(
         self,

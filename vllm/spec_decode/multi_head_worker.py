@@ -57,7 +57,7 @@ class MultiHeadWorker(Worker):
             model_outputs = super().execute_model(
                 execute_model_req=execute_model_req)[0]
             model_outputs_topK.append(model_outputs)
-            
+
         return model_outputs_topK, False
 
     def get_spec_proposals(

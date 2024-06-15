@@ -172,12 +172,14 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
 
         target_token_ids = target_token_ids.squeeze().reshape(
             spec_expanded_bs, num_candidate_seqs, k + 1)
-        target_probs = target_probs.squeeze().reshape(spec_expanded_bs, num_candidate_seqs, k + 1,
-                                                      self._vocab_size)
+        target_probs = target_probs.squeeze().reshape(spec_expanded_bs,
+                                                      num_candidate_seqs,
+                                                      k + 1, self._vocab_size)
         target_logprobs = target_logprobs.squeeze().reshape(
             spec_expanded_bs, num_candidate_seqs, k + 1, self._vocab_size)
 
-        all_tokens = torch.full(size=(contracted_bs, num_candidate_seqs, k + 1),
+        all_tokens = torch.full(size=(contracted_bs, num_candidate_seqs,
+                                      k + 1),
                                 fill_value=-1,
                                 device=self._device,
                                 dtype=torch.long)
@@ -199,7 +201,8 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
 
         for key in target_extra_output_data:
             target_extra_output_data[key] = target_extra_output_data[
-                key].squeeze().reshape(spec_expanded_bs, num_candidate_seqs, k + 1,
+                key].squeeze().reshape(spec_expanded_bs, num_candidate_seqs,
+                                       k + 1,
                                        target_extra_output_data[key].shape[-1])
 
         if target_extra_output_data:
@@ -264,7 +267,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
                     seq_group_metadata_list)))
 
         return target_seq_group_metadata
-    
+
     def _create_target_seq_group_metadata(
         self,
         input_seq_group_metadata: SequenceGroupMetadata,
@@ -305,11 +308,11 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
 
         return target_seq_group_metadata_list
 
-
     def _create_target_seq_group_metadata_v2(
         self,
         input_seq_group_metadata: SequenceGroupMetadata,
-        proposal_token_ids: List[List[List[TokenId]]],  # shape: [batch_size, num_candidate_seqs, k]
+        proposal_token_ids: List[List[
+            List[TokenId]]],  # shape: [batch_size, num_candidate_seqs, k]
         batch_index: int,
         target_seq_ids_iter: Iterator[TargetSeqId],
     ) -> List[SequenceGroupMetadata]:
@@ -329,23 +332,24 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
 
             for token_ids in token_ids_to_score:
                 target_seq_group_metadata = self._create_single_target_seq_group_metadata(
-                        input_seq_group_metadata,
-                        input_seq_id,
-                        next(target_seq_ids_iter),
-                        token_ids,
-                    )
+                    input_seq_group_metadata,
+                    input_seq_id,
+                    next(target_seq_ids_iter),
+                    token_ids,
+                )
                 if len(proposal_token_ids) > 1:
                     target_seq_group_metadata.num_lookahead_slot_mapping_dirty_offset = (
-                        candidate_index * len(proposal_token_ids[0][0])
-                    )
-                target_seq_group_metadata_list.append(target_seq_group_metadata)
+                        candidate_index * len(proposal_token_ids[0][0]))
+                target_seq_group_metadata_list.append(
+                    target_seq_group_metadata)
 
         return target_seq_group_metadata_list
 
     def _create_scoring_model_input_v2(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        proposal_token_ids: List[List[List[TokenId]]],  # shape: [batch_size, num_candidate_seqs, k]
+        proposal_token_ids: List[List[
+            List[TokenId]]],  # shape: [batch_size, num_candidate_seqs, k]
         target_seq_ids_iter: Iterator[TargetSeqId],
     ) -> List[SequenceGroupMetadata]:
         """Given the original input sequences and proposed tokens from the draft
@@ -403,7 +407,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
         # and evaluate one by one right now. context_len is seq_len - 1 because
         # the kv cache is filled by a previous batch in the batch expansion.
         for data in new_seq_data_dict.values():
-            data.update_num_computed_tokens(data.get_len() - 1)
+            data.update_num_computed_tokens(data.get_len() - len(token_ids))
 
         return SequenceGroupMetadata(
             request_id=seq_group_metadata.request_id,

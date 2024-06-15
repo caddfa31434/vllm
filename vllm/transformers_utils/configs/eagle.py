@@ -6,6 +6,7 @@ from transformers import PretrainedConfig
 from vllm.transformers_utils.configs.inputs_spec import (ExtraModelInputsSpec,
                                                          ModelInputSpec)
 
+
 class EagleConfig(PretrainedConfig):
     model_type = "eagle"
 
@@ -35,16 +36,20 @@ class EagleConfig(PretrainedConfig):
         topk: int = 10,
         **kwargs,
     ):
-        if "architectures" not in kwargs or "LlamaForCausalLM" in kwargs["architectures"]:
+        if "architectures" not in kwargs or "LlamaForCausalLM" in kwargs[
+                "architectures"]:
             kwargs["architectures"] = ["EagleModel"]
-            
+
         self.extra_inputs_spec: ExtraModelInputsSpec = {
             "hidden_states": ModelInputSpec(shape=(hidden_size, ))
         }
 
-        self.tree_choices = [[0],[1],[2],[3],[0,0],[0,1],[0,2],[1,0],[1,1],[2,0],[2,1],[3,0]
-                ,[0,0,0],[0,0,1],[0,0,2],[0,1,0],[0,1,1],[0,2,0],[0,2,1],[1,0,0],
-                [0,0,0,0],[0,0,0,1],[0,0,0,2],[0,0,0,0,0],[0,0,0,0,1]]
+        self.tree_choices = [[0], [1], [2], [3], [0, 0], [0, 1], [0, 2],
+                             [1, 0], [1, 1], [2, 0], [2, 1], [3, 0], [0, 0, 0],
+                             [0, 0, 1], [0, 0, 2], [0, 1, 0], [0, 1, 1],
+                             [0, 2, 0], [0, 2, 1], [1, 0, 0], [0, 0, 0, 0],
+                             [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
+                             [0, 0, 0, 0, 1]]
         # self.tree_choices = [[0], [0, 0], [0, 1], [0, 2], [0, 3]] # # 1st depth we choose top 1 and 2nd depth we choose top 4
         self.topk = topk
 
@@ -86,19 +91,24 @@ class EagleConfig(PretrainedConfig):
         if self.rope_scaling is None:
             return
 
-        if not isinstance(self.rope_scaling, dict) or len(self.rope_scaling) != 2:
+        if not isinstance(self.rope_scaling,
+                          dict) or len(self.rope_scaling) != 2:
             raise ValueError(
-                "`rope_scaling` must be a dictionary with two fields, `type` and `factor`, " f"got {self.rope_scaling}"
-            )
+                "`rope_scaling` must be a dictionary with two fields, `type` and `factor`, "
+                f"got {self.rope_scaling}")
         rope_scaling_type = self.rope_scaling.get("type", None)
         rope_scaling_factor = self.rope_scaling.get("factor", None)
-        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic"]:
+        if rope_scaling_type is None or rope_scaling_type not in [
+                "linear", "dynamic"
+        ]:
             raise ValueError(
                 f"`rope_scaling`'s type field must be one of ['linear', 'dynamic'], got {rope_scaling_type}"
             )
-        if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
-            raise ValueError(f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}")
-
+        if rope_scaling_factor is None or not isinstance(
+                rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
+            raise ValueError(
+                f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}"
+            )
 
     def set_num_lookahead_tokens(self, num_lookahead_tokens: int):
         self.num_heads = num_lookahead_tokens

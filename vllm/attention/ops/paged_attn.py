@@ -125,27 +125,19 @@ class PagedAttention:
 
         # Hard Codes for dispatch tree attention
         if attn_masks is not None:
-            ref_query_cached_kv_attention(
-                output,
-                query,
-                num_heads // num_kv_heads,
-                key_cache,
-                value_cache,
-                block_tables,
-                seq_lens,
-                scale,
-                alibi_slopes,
-                attn_masks
-            )
+            ref_query_cached_kv_attention(output, query,
+                                          num_heads // num_kv_heads, key_cache,
+                                          value_cache, block_tables, seq_lens,
+                                          scale, alibi_slopes, attn_masks)
         # else:
         #     custom_masks = []
         #     for _ in range(num_seqs):
         #         custom_mask = create_tree_attention_mask(
-        #             seq_lens[_], 
-        #             context_lens[_], 
+        #             seq_lens[_],
+        #             context_lens[_],
         #             max(seq_lens),
-        #             1, 
-        #             num_heads, 
+        #             1,
+        #             num_heads,
         #             dtype=torch.float
         #         ).to(query.device)
         #         custom_masks.append(custom_mask)

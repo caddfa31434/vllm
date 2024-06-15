@@ -285,6 +285,9 @@ class SequenceData:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
 
+    def get_uncomputed_token_ids(self) -> List[int]:
+        return self.output_token_ids[self._num_computed_tokens - self.get_prompt_len():]
+
     def get_prompt_token_ids(self) -> List[int]:
         return self.prompt_token_ids
 

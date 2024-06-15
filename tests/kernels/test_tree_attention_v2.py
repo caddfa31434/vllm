@@ -48,12 +48,11 @@ SEEDS = [0]
 #     f"cuda:{i}" for i in range(1 if torch.cuda.device_count() == 1 else 2)
 # ]
 
-CUDA_DEVICES = [
-    "cuda:0"
-]
+CUDA_DEVICES = ["cuda:0"]
 
 # QUERY_LEN =  [1, 7, 31]
-QUERY_LEN =  [3]
+QUERY_LEN = [3]
+
 
 def create_tree_attention_mask(context_len, prompt_len, tree_width,
                                num_kv_head, dtype):
@@ -71,19 +70,21 @@ def create_tree_attention_mask(context_len, prompt_len, tree_width,
     generate_mask = generate_mask.unsqueeze(0).repeat(num_kv_head, 1, 1)
     return torch.concat([prompt_mask, generate_mask], dim=2)
 
+
 def create_tree_attention_mask_v2(context_len, q_len, num_kv_head, dtype):
     # 创建一个全零的掩码矩阵
     mask = torch.zeros((num_kv_head, q_len, context_len), dtype=dtype)
-    
+
     min_value = torch.finfo(dtype).min
-    
+
     for s in range(q_len):
-        num_masked = torch.randint(1, context_len, (1,)).item()
+        num_masked = torch.randint(1, context_len, (1, )).item()
         mask_indices = torch.randperm(context_len)[:num_masked]
         for b in range(num_kv_head):
             mask[b, s, mask_indices] = min_value
-    
+
     return mask
+
 
 def ref_masked_attention(
     query: torch.Tensor,
@@ -101,18 +102,14 @@ def ref_masked_attention(
     return out
 
 
-def ref_query_cached_kv_attention(
-    output: torch.Tensor,
-    query: torch.Tensor,
-    num_queries_per_kv: int,
-    key_cache: torch.Tensor,
-    value_cache: torch.Tensor,
-    block_tables: torch.Tensor,
-    seq_lens: torch.Tensor,
-    scale: float,
-    alibi_slopes: Optional[torch.Tensor],
-    masks: torch.Tensor
-) -> None:
+def ref_query_cached_kv_attention(output: torch.Tensor, query: torch.Tensor,
+                                  num_queries_per_kv: int,
+                                  key_cache: torch.Tensor,
+                                  value_cache: torch.Tensor,
+                                  block_tables: torch.Tensor,
+                                  seq_lens: torch.Tensor, scale: float,
+                                  alibi_slopes: Optional[torch.Tensor],
+                                  masks: torch.Tensor) -> None:
     num_query_heads = query.shape[1]
     num_kv_heads = value_cache.shape[1]
     head_size = value_cache.shape[2]
@@ -164,6 +161,7 @@ def ref_query_cached_kv_attention(
         output[i].copy_(out, non_blocking=True)
     output.reshape(-1, num_kv_heads, head_size)
 
+
 @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
 @pytest.mark.parametrize("q_len", [1])
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
@@ -194,7 +192,10 @@ def test_paged_attention(
     torch.set_default_device(device)
     scale = float(1.0 / (head_size**0.5))
     num_query_heads, num_kv_heads = num_heads
-    query = torch.empty(num_seqs * q_len, num_query_heads, head_size, dtype=dtype)
+    query = torch.empty(num_seqs * q_len,
+                        num_query_heads,
+                        head_size,
+                        dtype=dtype)
     query.uniform_(-scale, scale)
 
     assert num_query_heads % num_kv_heads == 0
@@ -231,19 +232,17 @@ def test_paged_attention(
     kv_scale = 1.0
 
     # Test for origin paged attention kernel. fit for qlen == 1 and causal mask
-    assert(q_len == 1)
+    assert (q_len == 1)
 
     #  The flattened mask tensor, shape: (sum(q_len[i] * k_len[i] for i in range(batch_size)).
     #  using triu attention mask (fill -inf for masking and 0 for others) is equivalent to setting causal=True.
     custom_masks = []
     for _ in range(num_seqs):
-        custom_mask = create_tree_attention_mask(
-            seq_lens[_], 
-            prompt_lens[_], 
-            q_len, 
-            num_query_heads, 
-            dtype=torch.float
-        )
+        custom_mask = create_tree_attention_mask(seq_lens[_],
+                                                 prompt_lens[_],
+                                                 q_len,
+                                                 num_query_heads,
+                                                 dtype=torch.float)
         custom_masks.append(custom_mask)
     # custom_masks = torch.stack(custom_masks, dim=0)
 
@@ -265,18 +264,9 @@ def test_paged_attention(
     )
 
     ref_output = torch.empty_like(query)
-    ref_query_cached_kv_attention(
-        ref_output,
-        query,
-        num_queries_per_kv,
-        key_cache,
-        value_cache,
-        block_tables,
-        seq_lens,
-        scale,
-        alibi_slopes,
-        custom_masks
-    )
+    ref_query_cached_kv_attention(ref_output, query, num_queries_per_kv,
+                                  key_cache, value_cache, block_tables,
+                                  seq_lens, scale, alibi_slopes, custom_masks)
 
     # NOTE(woosuk): Due to the kernel-level differences in the two
     # implementations, there is a small numerical difference in the two
@@ -290,6 +280,7 @@ def test_paged_attention(
     if kv_cache_dtype == "fp8":
         atol, rtol = 1e-2, 1e-5
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol)
+
 
 # @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
 # @pytest.mark.parametrize("q_len", QUERY_LEN)
@@ -365,10 +356,10 @@ def test_paged_attention(
 #     custom_masks = []
 #     for _ in range(num_seqs):
 #         custom_mask = create_tree_attention_mask(
-#             seq_lens[_], 
-#             prompt_lens[_], 
-#             q_len, 
-#             num_query_heads, 
+#             seq_lens[_],
+#             prompt_lens[_],
+#             q_len,
+#             num_query_heads,
 #             dtype=torch.float
 #         )
 #         custom_masks.append(custom_mask)
@@ -405,6 +396,7 @@ def test_paged_attention(
 #         atol, rtol = 1e-2, 1e-5
 #     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol)
 
+
 @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
 @pytest.mark.parametrize("q_len", QUERY_LEN)
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
@@ -435,7 +427,10 @@ def test_tree_attention_v2(
     torch.set_default_device(device)
     scale = float(1.0 / (head_size**0.5))
     num_query_heads, num_kv_heads = num_heads
-    query = torch.empty(num_seqs * q_len, num_query_heads, head_size, dtype=dtype)
+    query = torch.empty(num_seqs * q_len,
+                        num_query_heads,
+                        head_size,
+                        dtype=dtype)
     query.uniform_(-scale, scale)
 
     assert num_query_heads % num_kv_heads == 0
@@ -477,12 +472,10 @@ def test_tree_attention_v2(
     flattened_mask_tensor = []
     for _ in range(num_seqs):
         # [num_query_heads, q_len, seq_len]
-        custom_mask = create_tree_attention_mask_v2(
-            seq_lens[_], 
-            q_len, 
-            num_query_heads, 
-            dtype=torch.float
-        )
+        custom_mask = create_tree_attention_mask_v2(seq_lens[_],
+                                                    q_len,
+                                                    num_query_heads,
+                                                    dtype=torch.float)
         custom_masks.append(custom_mask)
         flattened_mask_tensor.append(custom_mask[0].view(-1))
 
@@ -490,21 +483,12 @@ def test_tree_attention_v2(
     flattened_mask_tensor = torch.cat(flattened_mask_tensor, dim=0)
     output = torch.empty_like(query)
     # tree_attention_fwd_v2(query, output, key_cache, value_cache, block_tables,
-                    #    seq_lens, prompt_lens, flattened_mask_tensor, alibi_slopes)
+    #    seq_lens, prompt_lens, flattened_mask_tensor, alibi_slopes)
 
     ref_output = torch.empty_like(query)
-    ref_query_cached_kv_attention(
-        ref_output,
-        query,
-        num_queries_per_kv,
-        key_cache,
-        value_cache,
-        block_tables,
-        seq_lens,
-        scale,
-        alibi_slopes,
-        custom_masks
-    )
+    ref_query_cached_kv_attention(ref_output, query, num_queries_per_kv,
+                                  key_cache, value_cache, block_tables,
+                                  seq_lens, scale, alibi_slopes, custom_masks)
     # print(f"{ref_output=}")
     # # NOTE(woosuk): Due to the kernel-level differences in the two
     # # implementations, there is a small numerical difference in the two

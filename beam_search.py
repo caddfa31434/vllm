@@ -23,12 +23,14 @@
 # print(f"{request_outputs[0].outputs[0].text=}")
 
 import torch
+
+
 def create_tree_attention_mask(context_len, prompt_len, tree_width,
                                num_kv_head, dtype):
     prompt_mask = torch.zeros((num_kv_head, tree_width, prompt_len),
                               dtype=dtype)
 
-    print(f"{prompt_mask=}")    
+    print(f"{prompt_mask=}")
 
     none_mask_value = torch.arange(context_len - prompt_len).repeat(
         tree_width, 1) - torch.arange(tree_width)[:, None]
@@ -40,7 +42,8 @@ def create_tree_attention_mask(context_len, prompt_len, tree_width,
     generate_mask = torch.full(none_mask_value.shape, min_value, dtype=dtype)
     generate_mask[none_mask_value] = 0
     generate_mask = generate_mask.unsqueeze(0).repeat(num_kv_head, 1, 1)
-    print(f"{generate_mask=}")   
+    print(f"{generate_mask=}")
     return torch.concat([prompt_mask, generate_mask], dim=2)
+
 
 print(create_tree_attention_mask(6, 2, 4, 1, torch.float16))

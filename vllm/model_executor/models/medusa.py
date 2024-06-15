@@ -55,13 +55,10 @@ class Medusa(nn.Module):
         self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
                                                 config.vocab_size, logit_scale)
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        hidden_states: Optional[torch.Tensor],
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata) -> list[torch.Tensor]:
+    def forward(self, input_ids: torch.Tensor, positions: torch.Tensor,
+                hidden_states: Optional[torch.Tensor],
+                kv_caches: List[torch.Tensor],
+                attn_metadata: AttentionMetadata) -> list[torch.Tensor]:
         # Medusa workflow
         # [ 1, 450, 7483, 310, 3444, 338] -> [29892, 278, 29889]
         # [3681] -> [29892, 278, 29889]
@@ -91,7 +88,6 @@ class Medusa(nn.Module):
         logprobs = torch.log_softmax(logits, dim=-1)
         token_ids = logits.argmax(-1)  # support only top-1 for now
         probs = torch.softmax(logits, dim=-1)
-
 
         token_id_list = []
         token_prob_list = []
@@ -145,7 +141,7 @@ class Medusa(nn.Module):
 
         # Update names in the weights
         for name, loaded_weight in weights:
-            
+
             if name in key_mapping:
                 new_name = key_mapping[name]
             else:
@@ -155,5 +151,6 @@ class Medusa(nn.Module):
                 continue
 
             param = params_dict[new_name]
-            weight_loader = getattr(param, "weight_loader", default_weight_loader)
+            weight_loader = getattr(param, "weight_loader",
+                                    default_weight_loader)
             weight_loader(param, loaded_weight)

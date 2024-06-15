@@ -212,8 +212,10 @@ def sampler_output_to_torch_v2(
     sampled_token_probs = torch.stack([
         torch.stack([
             sampler_output.sampled_token_probs for sampler_output in sequence
-        ], dim=0) for sequence in sampler_output_list
-    ], dim=0)
+        ],
+                    dim=0) for sequence in sampler_output_list
+    ],
+                                      dim=0)
 
     # Transposing if needed
     if sampler_transposed:
@@ -221,10 +223,10 @@ def sampler_output_to_torch_v2(
 
     # Stacking log probabilities, shape: [num_sequences, num_tokens, batch_size, vocab_size]
     sampled_token_logprobs = torch.stack([
-        torch.stack([
-            sampler_output.logprobs for sampler_output in sequence
-        ], dim=0) for sequence in sampler_output_list
-    ], dim=0)
+        torch.stack([sampler_output.logprobs for sampler_output in sequence],
+                    dim=0) for sequence in sampler_output_list
+    ],
+                                         dim=0)
 
     # Transposing if needed
     if sampler_transposed:
@@ -233,19 +235,23 @@ def sampler_output_to_torch_v2(
     # Stacking token IDs, shape: [num_sequences, num_tokens, batch_size]
     sampled_token_ids = torch.stack([
         torch.stack([
-            sampler_output.sampled_token_ids.flatten() for sampler_output in sequence
-        ], dim=0) for sequence in sampler_output_list
-    ], dim=0)
+            sampler_output.sampled_token_ids.flatten()
+            for sampler_output in sequence
+        ],
+                    dim=0) for sequence in sampler_output_list
+    ],
+                                    dim=0)
 
     # Transposing if needed
     if sampler_transposed:
         sampled_token_ids = sampled_token_ids.permute(2, 0, 1)
 
     sampled_extra_output_data = TensorData.stack([
-        TensorData.stack([
-            sampler_output.raw_extra_tensors for sampler_output in sequence
-        ], dim=0) for sequence in sampler_output_list
-    ], dim=0)
+        TensorData.stack(
+            [sampler_output.raw_extra_tensors for sampler_output in sequence],
+            dim=0) for sequence in sampler_output_list
+    ],
+                                                 dim=0)
 
     if sampler_transposed:
         for k in sampled_extra_output_data:

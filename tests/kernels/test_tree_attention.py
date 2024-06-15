@@ -46,9 +46,7 @@ SEEDS = [0]
 # CUDA_DEVICES = [
 #     f"cuda:{i}" for i in range(1 if torch.cuda.device_count() == 1 else 2)
 # ]
-CUDA_DEVICES = [
-    "cuda:0"
-]
+CUDA_DEVICES = ["cuda:0"]
 
 # TREEWIDTH = [1, 7, 31]
 TREEWIDTH = [1]
@@ -220,7 +218,7 @@ def test_paged_attention(
                                                 kv_cache_dtype, dtype, seed,
                                                 device)
     key_cache, value_cache = key_caches[0], value_caches[0]
-    
+
     torch.cuda.synchronize()
     output = torch.empty_like(query)
     tree_attention_fwd(query, output, key_cache, value_cache, block_tables,
@@ -241,5 +239,6 @@ def test_paged_attention(
     # print(f"{output=}")
     # print(f"{ref_output=}")
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol)
-    
+
+
 # test_paged_attention(create_kv_caches_with_random, 78, (32, 32), 128, False, 32, torch.half, "auto", 1, 1, 'cuda')
