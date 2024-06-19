@@ -38,6 +38,10 @@ from vllm.transformers_utils.tokenizer_group import (BaseTokenizerGroup,
 from vllm.usage.usage_lib import (UsageContext, is_usage_stats_enabled,
                                   usage_message)
 from vllm.utils import Counter
+from vllm.spec_decode.util import (create_sequence_group_output,
+                                   get_all_num_logprobs, get_all_seq_ids,
+                                   get_sampled_token_logprobs, nvtx_range,
+                                   split_batch_by_proposal_len)
 
 logger = init_logger(__name__)
 _LOCAL_LOGGING_INTERVAL_SEC = 5
@@ -681,8 +685,10 @@ class LLMEngine:
                 scheduled_seq_groups, output_by_sequence_group,
                 seq_group_metadata_list):
             seq_group = scheduled_seq_group.seq_group
-            seq_group.update_num_computed_tokens(
-                scheduled_seq_group.token_chunk_size)
+            if scheduled_seq_group.token_chunk_size != 1:
+                seq_group.update_num_computed_tokens(
+                    scheduled_seq_group.token_chunk_size)
+
             if self.model_config.embedding_mode:
                 self._process_sequence_group_outputs(seq_group, outputs)
                 continue
@@ -690,6 +696,16 @@ class LLMEngine:
             self.output_processor.process_prompt_logprob(seq_group, outputs)
             if seq_group_meta.do_sample:
                 self.output_processor.process_outputs(seq_group, outputs)
+
+            # Hack for spec decoding
+            if scheduled_seq_group.token_chunk_size == 1:
+                samples = [
+                    outputs[step].samples[0] for step in range(len(outputs))
+                ]
+                valid_samples = [
+                    sample for sample in samples if sample.output_token != -1
+                ]
+                seq_group.update_num_computed_tokens(len(valid_samples))
 
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
@@ -707,6 +723,7 @@ class LLMEngine:
             request_outputs.append(request_output)
         return request_outputs
 
+    @nvtx_range("lm_engine.step()")
     def step(self) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
         """Performs one decoding iteration and returns newly generated results.
 

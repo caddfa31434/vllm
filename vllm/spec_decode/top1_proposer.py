@@ -101,12 +101,10 @@ class TopKProposer(SpeculativeProposer):
             sampler_transposed=transposed,
         )
 
-        proposals = SpeculativeProposals(
-            proposal_token_ids=proposal_tokens,
-            proposal_probs=proposal_probs,
-            proposal_lens=proposal_lens,
-            tree_candidates=tree_candidates
-        )
+        proposals = SpeculativeProposals(proposal_token_ids=proposal_tokens,
+                                         proposal_probs=proposal_probs,
+                                         proposal_lens=proposal_lens,
+                                         tree_candidates=tree_candidates)
 
         return proposals
 

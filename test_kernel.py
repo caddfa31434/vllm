@@ -214,8 +214,7 @@ if triton.__version__ >= "2.1.0":
             num_stages=1,
         )
         return
-    
-    
+
     @triton.jit
     def _fwd_kernel_v2(
         Q,
@@ -357,14 +356,14 @@ if triton.__version__ >= "2.1.0":
     @torch.inference_mode()
     def tree_attention_fwd_v2(q,
                               mask,
-                           o,
-                           k_cache,
-                           v_cache,
-                           block_table,
-                           context_len,
-                           prompt_len,
-                           tree_width,
-                           alibi_slopes=None):
+                              o,
+                              k_cache,
+                              v_cache,
+                              block_table,
+                              context_len,
+                              prompt_len,
+                              tree_width,
+                              alibi_slopes=None):
 
         cap = torch.cuda.get_device_capability()
         BLOCK_N = 128 if cap[0] >= 8 else 64
@@ -423,10 +422,12 @@ if triton.__version__ >= "2.1.0":
             num_stages=1,
         )
         return
-    
 
-MAX_SEQ_LEN = 4 # get_max_shared_memory_bytes() // FLOAT32_BYTES - 512
+
+MAX_SEQ_LEN = 4  # get_max_shared_memory_bytes() // FLOAT32_BYTES - 512
 NUM_BLOCKS = 16
+
+
 def create_tree_attention_mask(context_len, prompt_len, tree_width,
                                num_kv_head, dtype):
     prompt_mask = torch.zeros((num_kv_head, tree_width, prompt_len),
@@ -442,6 +443,8 @@ def create_tree_attention_mask(context_len, prompt_len, tree_width,
     generate_mask[none_mask_value] = 0
     generate_mask = generate_mask.unsqueeze(0).repeat(num_kv_head, 1, 1)
     return torch.concat([prompt_mask, generate_mask], dim=2)
+
+
 def ref_masked_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -456,6 +459,8 @@ def ref_masked_attention(
     attn_weights = torch.softmax(attn_weights, dim=-1).to(value.dtype)
     out = torch.einsum("hqk,khd->qhd", attn_weights, value)
     return out
+
+
 def ref_query_cached_kv_attention(output: torch.Tensor, query: torch.Tensor,
                                   num_queries_per_kv: int,
                                   key_cache: torch.Tensor,
@@ -514,6 +519,7 @@ def ref_query_cached_kv_attention(output: torch.Tensor, query: torch.Tensor,
         output[i].copy_(out, non_blocking=True)
     output.reshape(-1, num_kv_heads, head_size)
 
+
 def test_paged_attention(
     kv_cache_factory,
     num_seqs: int,
@@ -546,7 +552,9 @@ def test_paged_attention(
     if use_alibi:
         alibi_slopes = torch.randn(num_query_heads, dtype=torch.float)
 
-    context_lens = [4,4] #[random.randint(tree_width + 1, MAX_SEQ_LEN) for _ in range(num_seqs)]
+    context_lens = [
+        4, 4
+    ]  #[random.randint(tree_width + 1, MAX_SEQ_LEN) for _ in range(num_seqs)]
     context_lens[-1] = MAX_SEQ_LEN
     max_context_len = max(context_lens)
     prompt_lens = [x - tree_width for x in context_lens]
@@ -588,16 +596,16 @@ def test_paged_attention(
     #     .to(0)
     # )
 
-   #  The flattened mask tensor, shape: (sum(q_len[i] * k_len[i] for i in range(batch_size)).
-    custom_mask = (
-        torch.triu(
-            torch.full((num_seqs, tree_width, max_context_len), -5e4, dtype=torch.float32),
-            diagonal=(max_context_len - tree_width + 1),
-        )
-    )
+    #  The flattened mask tensor, shape: (sum(q_len[i] * k_len[i] for i in range(batch_size)).
+    custom_mask = (torch.triu(
+        torch.full((num_seqs, tree_width, max_context_len),
+                   -5e4,
+                   dtype=torch.float32),
+        diagonal=(max_context_len - tree_width + 1),
+    ))
 
     print(f"{custom_mask=}")
-    
+
     context_lens = torch.tensor(context_lens, dtype=torch.int)
     prompt_lens = torch.tensor(prompt_lens, dtype=torch.int)
 
@@ -611,8 +619,7 @@ def test_paged_attention(
     ref_output = torch.empty_like(query)
     ref_query_cached_kv_attention(ref_output, query, num_queries_per_kv,
                                   key_cache, value_cache, block_tables,
-                                  context_lens, scale, alibi_slopes,
-                                  masks)
+                                  context_lens, scale, alibi_slopes, masks)
 
     torch.cuda.synchronize()
     output = torch.empty_like(query)
@@ -632,11 +639,12 @@ def test_paged_attention(
     # print(f"{output=}")
     # print(f"{ref_output=}")
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol)
-    
+
 
 from typing import (Any, AsyncIterator, Awaitable, Callable, Dict, Generic,
                     Hashable, List, Optional, OrderedDict, Tuple, TypeVar,
                     Union)
+
 STR_DTYPE_TO_TORCH_DTYPE = {
     "half": torch.half,
     "bfloat16": torch.bfloat16,
@@ -645,6 +653,8 @@ STR_DTYPE_TO_TORCH_DTYPE = {
     "fp8_e4m3": torch.uint8,
     "fp8_e5m2": torch.uint8,
 }
+
+
 def get_kv_cache_torch_dtype(
         cache_dtype: Optional[Union[str, torch.dtype]],
         model_dtype: Optional[Union[str, torch.dtype]] = None) -> torch.dtype:
@@ -667,6 +677,8 @@ def get_kv_cache_torch_dtype(
     else:
         raise ValueError(f"Invalid kv cache dtype: {cache_dtype}")
     return torch_dtype
+
+
 def create_kv_caches_with_random(
     num_blocks: int,
     block_size: int,
@@ -713,4 +725,6 @@ def create_kv_caches_with_random(
         value_caches.append(value_cache)
     return key_caches, value_caches
 
-test_paged_attention(create_kv_caches_with_random, 2, (1, 1), 128, False, 32, torch.half, "auto", 1, 2, 'cuda')
+
+test_paged_attention(create_kv_caches_with_random, 2, (1, 1), 128, False, 32,
+                     torch.half, "auto", 1, 2, 'cuda')

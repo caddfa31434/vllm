@@ -2,11 +2,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import torch
-
+import time
 from vllm import _custom_ops as ops
 from vllm.attention.ops.prefix_prefill import context_attention_fwd
-from vllm.attention.ops.tree_attn import tree_attention_fwd, ref_query_cached_kv_attention, create_tree_attention_mask
-
+from vllm.attention.ops.tree_attn import ref_query_cached_kv_attention
+from vllm.attention.ops.tree_attention import tree_attention_fwd
+import pdb
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
 
@@ -125,10 +126,24 @@ class PagedAttention:
 
         # Hard Codes for dispatch tree attention
         if attn_masks is not None:
-            ref_query_cached_kv_attention(output, query,
-                                          num_heads // num_kv_heads, key_cache,
-                                          value_cache, block_tables, seq_lens,
-                                          scale, alibi_slopes, attn_masks)
+            # attn_masks.shape [1, 1, 4, 18]  query[4, 32, 128]
+            # st = time.perf_counter()
+            if (query.shape[0] == 26):
+                tree_attention_fwd(output, query, key_cache, value_cache,
+                                   num_kv_heads, scale, block_tables, seq_lens,
+                                   block_size, max_seq_len,
+                                   attn_masks[:, 0, :, :])
+            else:
+                ref_query_cached_kv_attention(output, query,
+                                              num_heads // num_kv_heads,
+                                              key_cache, value_cache,
+                                              block_tables, seq_lens, scale,
+                                              alibi_slopes, attn_masks)
+            # ref_out = torch.empty_like(output)
+            # ref_query_cached_kv_attention(output, query, num_heads // num_kv_heads, key_cache, value_cache, block_tables, seq_lens, scale, alibi_slopes, attn_masks)
+            # print(f"{(time.perf_counter() - st)=}")
+            # print(torch.max(torch.abs(output - ref_out)))
+
         # else:
         #     custom_masks = []
         #     for _ in range(num_seqs):

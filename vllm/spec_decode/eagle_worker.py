@@ -9,6 +9,10 @@ from vllm.sequence import (ExecuteModelRequest, SamplerOutput,
 from vllm.spec_decode.interfaces import SpeculativeProposals
 from vllm.spec_decode.top1_proposer import TopKProposer
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
+from vllm.spec_decode.util import (create_sequence_group_output,
+                                   get_all_num_logprobs, get_all_seq_ids,
+                                   get_sampled_token_logprobs, nvtx_range,
+                                   split_batch_by_proposal_len)
 from vllm.worker.worker import Worker
 
 
@@ -80,6 +84,7 @@ class EagleWorker(Worker):
         tree_candidates = model_output[0][1]
         return model_outputs_topK, False, tree_candidates
 
+    @nvtx_range("eagle_worker.get_spec_proposals")
     def get_spec_proposals(
         self,
         execute_model_req: ExecuteModelRequest,
@@ -89,7 +94,6 @@ class EagleWorker(Worker):
         """
 
         return self._proposer.get_spec_proposals(execute_model_req)
-
 
     @staticmethod
     def _append_new_tokens(
@@ -137,7 +141,6 @@ class EagleWorker(Worker):
 
                 seq.append_token_id(token_id, token_logprob.logprob)
                 seq.update_num_computed_tokens(num_new_computed_tokens)
-
 
     @staticmethod
     def _shallow_copy_inputs(

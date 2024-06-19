@@ -396,19 +396,32 @@ class RejectionSampler(nn.Module):
 
         # Find the tokens that match the maximum logits for each position in the sequence
         posterior_mask = (target_token_ids == draft_token_ids).int()
-        candidates_accept_length = (torch.cumprod(posterior_mask, dim=-1)).sum(dim=-1)
+        candidates_accept_length = (torch.cumprod(posterior_mask,
+                                                  dim=-1)).sum(dim=-1)
         accept_length = candidates_accept_length.max(dim=1).values
-        best_candidate_index = torch.argmax(candidates_accept_length, dim=-1).to(torch.long)
-        output_token_ids = draft_token_ids[tuple(range(len(accept_length))), best_candidate_index.tolist()]
-        output_token_ids = torch.zeros((target_token_ids.shape[0], target_token_ids.shape[-1]), dtype=int) - 1 
+        best_candidate_index = torch.argmax(candidates_accept_length,
+                                            dim=-1).to(torch.long)
+        output_token_ids = draft_token_ids[tuple(range(len(accept_length))),
+                                           best_candidate_index.tolist()]
+        output_token_ids = torch.zeros(
+            (target_token_ids.shape[0], target_token_ids.shape[-1] + 1),
+            device=draft_token_ids.device,
+            dtype=int) - 1
 
         for i in range(target_token_ids.shape[0]):
-            draft_slice = draft_token_ids[i, best_candidate_index[i], :accept_length[i]]
-            target_slice = target_token_ids[i, best_candidate_index[i], accept_length[i]].unsqueeze(0)
+            draft_slice = draft_token_ids[
+                i, best_candidate_index[i], :accept_length[i]]
+            target_slice = (torch.cat([target_token_ids, bonus_token_ids],
+                                      dim=-1))[i, best_candidate_index[i],
+                                               accept_length[i]].unsqueeze(0)
             combined_slice = torch.cat((draft_slice, target_slice), dim=0)
-            padded_output_token_ids = torch.zeros(5) - 1
-            length_to_copy = min(combined_slice.size(0), 5)
-            padded_output_token_ids[:length_to_copy] = combined_slice[:length_to_copy]
+            padded_output_token_ids = torch.zeros(target_token_ids.shape[-1] +
+                                                  1) - 1
+            length_to_copy = min(combined_slice.size(0),
+                                 target_token_ids.shape[-1] + 1)
+            padded_output_token_ids[:
+                                    length_to_copy] = combined_slice[:
+                                                                     length_to_copy]
             output_token_ids[i] = padded_output_token_ids
 
         # accepted, recovered_token_ids = self._batch_modified_rejection_sampling_v2(

@@ -4,7 +4,7 @@ from vllm.sampling_params import SamplingParams
 import os
 
 os.environ['VLLM_ATTENTION_BACKEND'] = 'XFORMERS'
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 # llm = LLM(
 #     model="/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/vicuna-7b-v1.3/",
 #     speculative_model="/data/jieni/workspace/code/inference-toolboxes/vllm_master/flipkart-incubator/vllm/medusa-vicuna-7b-v1.3",
@@ -21,9 +21,9 @@ llm = LLM(
     "/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/Llama-2-7b-chat-hf",
     speculative_model=
     "/data/jieni/workspace/code/inference-toolboxes/hf_experimanets/EAGLE-llama2-chat-7B",
-    num_speculative_candidates=1,
+    num_speculative_candidates=15,
     num_speculative_tokens=5,
-    num_lookahead_slots=5,
+    num_lookahead_slots=75,
     use_v2_block_manager=True,
     tensor_parallel_size=1,
     gpu_memory_utilization=0.5,
@@ -45,8 +45,7 @@ sampling_params = SamplingParams(temperature=0.0, max_tokens=100)
 prompts = [
     # "Hello, my name is",
     # "The president of the United States is",
-    # "The capital of France is Paris. It is located in the",
-    "hi" * 2040,
+    "The capital of France is Paris. It is located in the",
     # "The future of AI is",
 ]
 
@@ -59,8 +58,8 @@ prompts = [
 request_outputs = llm.generate(prompts=prompts,
                                sampling_params=sampling_params)
 
-# request_outputs = llm.generate(prompts=prompts,
-#                                sampling_params=sampling_params)
+request_outputs = llm.generate(prompts=prompts,
+                               sampling_params=sampling_params)
 
 print(f"{request_outputs[0].outputs[0].text=}")
 # print(f"{request_outputs[1].outputs[0].text=}")

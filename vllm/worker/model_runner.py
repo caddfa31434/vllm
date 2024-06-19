@@ -818,7 +818,9 @@ class ModelRunner:
         execute_model_kwargs.update(multi_modal_kwargs)
         hidden_states = model_executable(**execute_model_kwargs)
 
-        if (self.model_config.hf_config.architectures[0] == "EagleModel") or (attn_metadata.num_decode_tokens > 0 and attn_metadata.max_query_len > 1):
+        if (self.model_config.hf_config.architectures[0]
+                == "EagleModel") or (attn_metadata.num_decode_tokens > 0
+                                     and attn_metadata.max_query_len > 1):
             return hidden_states
 
         # Compute the logits.
@@ -860,6 +862,17 @@ class ModelRunner:
                 output.raw_extra_tensors = sampled_extra_tensor_data
 
         return output
+
+    @torch.inference_mode()
+    def defragment_accepted_kv_blocks(
+            self,
+            seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+            token_ids: torch.Tensor, best_candidate_index: torch.Tensor,
+            kv_caches: List[torch.Tensor]):
+        self.model.defragment_accepted_kv_blocks(seq_group_metadata_list,
+                                                 token_ids,
+                                                 best_candidate_index,
+                                                 kv_caches)
 
     @torch.inference_mode()
     def profile_run(self) -> None:

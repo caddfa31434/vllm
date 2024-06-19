@@ -221,6 +221,18 @@ class Worker(WorkerBase):
         if blocks_to_copy.numel() > 0:
             self.cache_engine.copy(blocks_to_copy)
 
+    def defragment_accepted_kv_blocks(self,
+                                      execute_model_req: ExecuteModelRequest,
+                                      token_ids: torch.Tensor,
+                                      best_candidate_index: torch.Tensor):
+        seq_group_metadata_list = execute_model_req.seq_group_metadata_list
+        self.model_runner.defragment_accepted_kv_blocks(
+            seq_group_metadata_list,
+            token_ids,
+            best_candidate_index,
+            self.gpu_cache,
+        )
+
     @torch.inference_mode()
     def execute_model(
         self,

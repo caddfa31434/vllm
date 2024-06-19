@@ -23,9 +23,13 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, kv_cache_scales_loader)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.sequence import SamplerOutput
+from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 from vllm.utils import is_hip
 from vllm.transformers_utils.configs.eagle import EagleConfig
+from vllm.spec_decode.util import (create_sequence_group_output,
+                                   get_all_num_logprobs, get_all_seq_ids,
+                                   get_sampled_token_logprobs, nvtx_range,
+                                   split_batch_by_proposal_len)
 
 
 class EagleMLP(nn.Module):
@@ -739,102 +743,10 @@ class Eagle(nn.Module):
 
         return combined_attention_mask
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        hidden_states: Optional[torch.Tensor],
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
-        sampling_metadata: SamplingMetadata,
-    ) -> list[torch.Tensor]:
-        if attn_metadata.num_prefill_tokens > 0 and attn_metadata.num_decode_tokens == 0:
-            out_hidden = self.model(hidden_states, input_ids, positions,
-                                    kv_caches, attn_metadata)
-            return out_hidden
-        else:
-            ss_token = []
-            ss_prob = []
-
-            # step -1
-            out_hidden = self.model(hidden_states, input_ids, positions,
-                                    kv_caches, attn_metadata)
-            logits = self.compute_logits(out_hidden,
-                                           sampling_metadata)
-            # logits = torch.matmul(out_hidden, self.lm_head.weight.t())
-            # print(f"{logits=}")
-            topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
-            logprobs = torch.log_softmax(logits, dim=-1)
-            probs = torch.softmax(logits, dim=-1)
-            ss_token.append(
-                topk_index.view(len(attn_metadata.block_tables), -1,
-                                topk_index.shape[-1]))
-            ss_prob.append(
-                probs.view(len(attn_metadata.block_tables), -1,
-                                probs.shape[-1]))
-
-            for i in range(len(self.tree_buffer['tree_indices'])):
-                topk_index, out_hidden = self.step(i, input_ids, positions,
-                                                   hidden_states, kv_caches,
-                                                   attn_metadata,
-                                                   sampling_metadata, ss_token, ss_prob,
-                                                   topk_index, out_hidden)
-
-            ss_token = torch.cat(ss_token, dim=1)
-            ss_prob = torch.cat(ss_prob, dim=1)
-
-            batch = len(attn_metadata.block_tables)
-            candidates = torch.cat(
-                [input_ids.reshape(-1, 1),
-                 ss_token.view(batch, -1)], dim=-1)
-
-            tree_candidates = candidates[:, self.
-                                         targrt_tree_buffer["tree_indices"]]
-
-            tree_candidates_ext = torch.cat([
-                tree_candidates,
-                torch.zeros((batch, 1),
-                            dtype=torch.long,
-                            device=tree_candidates.device)
-            ],
-                                            dim=-1)
-
-            cart_candidates = tree_candidates_ext[:, self.targrt_tree_buffer[
-                "retrieve_indices"]]
-
-            candidates_prob = torch.cat(
-                [torch.ones((batch, 1), device=ss_prob.device, dtype=torch.float32),
-                ss_prob.view(batch, -1)],
-                dim=-1)
-            tree_candidates_prob = candidates_prob[:, self.targrt_tree_buffer["tree_indices"]]
-            tree_candidates_prob_ext = torch.cat(
-            [   tree_candidates_prob, torch.ones((batch, 1), dtype=torch.float32, device=tree_candidates_prob.device)],
-            dim=-1)
-            cart_candidates_prob = tree_candidates_prob_ext[:, self.targrt_tree_buffer[
-                "retrieve_indices"]]
-            outputs: List[List[Optional[SamplerOutput]]] = []
-
-            for idx_x in range(batch):
-                output: List[Optional[SamplerOutput]] = []
-                for idx_y in range(len(cart_candidates[idx_x])):
-                    # for idx_y in range(2):
-                    output.append(
-                        SamplerOutput(
-                            outputs=None,
-                            sampled_token_probs=cart_candidates_prob[idx_x][idx_y][1:],
-                            logprobs=torch.rand(6 - 1,
-                                                32000,
-                                                device=cart_candidates.device,
-                                                dtype=torch.float32),
-                            sampled_token_ids=cart_candidates[idx_x][idx_y]
-                            [1:],
-                        ))
-                outputs.append(output)
-            return outputs, tree_candidates[:, 1:]
-
-    def step(self, idx, input_ids, positions, hidden_states, kv_caches,
-             attn_metadata, sampling_metadata, ss_token, ss_prob, topk_index,
-             next_out_hidden):
+    @nvtx_range("eagle._step")
+    def _step(self, idx, input_ids, positions, hidden_states, kv_caches,
+              attn_metadata, sampling_metadata, ss_token, ss_prob, topk_index,
+              next_out_hidden):
         batch = len(attn_metadata.block_tables)
         if idx == 0:
             next_input_ids = topk_index[:, self.tree_buffer['tree_indices']
@@ -849,20 +761,20 @@ class Eagle(nn.Module):
                 next_out_hidden.view(batch, -1, next_out_hidden.shape[-1]),
                 self.tree_buffer["repeat_nums"][idx])
         next_position_ids = positions.unsqueeze(1).expand(
-            positions.shape[0], len(self.tree_buffer['tree_indices'])
+            positions.shape[0], len(self.tree_buffer["position_ids"][idx])
         ) + self.tree_buffer["position_ids"][idx].to(
             positions.device) + idx + 1
 
         self.block_size = 16
         new_slot_mapping: List[int] = []
-        for _ in range(0, len(attn_metadata.block_tables)):
-            for i in range(0, len(self.tree_buffer["tree_indices"][idx])):
-                i = i + attn_metadata.decode_metadata.context_lens_tensor[
-                    _] + 1 if idx == 0 else len(
-                        self.tree_buffer["tree_indices"][idx - 1])
-                block_number = attn_metadata.block_tables[_][i //
+        for i in range(0, len(attn_metadata.block_tables)):
+            for j in range(0, len(self.tree_buffer["tree_indices"][idx])):
+                context_len = j + attn_metadata.decode_metadata.context_lens_tensor[
+                    i] + (1 if idx == 0 else len(
+                        self.tree_buffer["tree_indices"][idx - 1]))
+                block_number = attn_metadata.block_tables[i][context_len //
                                                              self.block_size]
-                block_offset = i % self.block_size
+                block_offset = context_len % self.block_size
                 slot = block_number * self.block_size + block_offset
                 new_slot_mapping.append(slot)
 
@@ -873,7 +785,8 @@ class Eagle(nn.Module):
 
         attn_metadata.decode_metadata.seq_lens_tensor += len(
             self.tree_buffer["tree_indices"][idx])
-        offset = 1 if idx == 0 else len(self.tree_buffer["tree_indices"][idx])
+        offset = (1 if idx == 0 else len(self.tree_buffer["tree_indices"][idx -
+                                                                          1]))
         attn_metadata.decode_metadata.context_lens_tensor = attn_metadata.decode_metadata.context_lens_tensor + offset
 
         # Initialize a mask of zeros with the desired shape (4x9)
@@ -916,10 +829,111 @@ class Eagle(nn.Module):
             topk_index.view(len(attn_metadata.block_tables), -1,
                             topk_index.shape[-1]))
         ss_prob.append(
-            probs.view(len(attn_metadata.block_tables), -1,
-                            probs.shape[-1]))
+            probs.view(len(attn_metadata.block_tables), -1, probs.shape[-1]))
 
         return topk_index, next_out_hidden
+
+    @nvtx_range("eagle.forward")
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        hidden_states: Optional[torch.Tensor],
+        kv_caches: List[torch.Tensor],
+        attn_metadata: AttentionMetadata,
+        sampling_metadata: SamplingMetadata,
+    ) -> list[torch.Tensor]:
+        if attn_metadata.num_prefill_tokens > 0 and attn_metadata.num_decode_tokens == 0:
+            out_hidden = self.model(hidden_states, input_ids, positions,
+                                    kv_caches, attn_metadata)
+            return out_hidden
+        else:
+            ss_token = []
+            ss_prob = []
+
+            out_hidden = self.model(hidden_states, input_ids, positions,
+                                    kv_caches, attn_metadata)
+            logits = self.compute_logits(out_hidden, sampling_metadata)
+            # logits = torch.matmul(out_hidden, self.lm_head.weight.t())
+            # print(f"{logits=}")
+            topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
+            logprobs = torch.log_softmax(logits, dim=-1)
+            probs = torch.softmax(logits, dim=-1)
+            ss_token.append(
+                topk_index.view(len(attn_metadata.block_tables), -1,
+                                topk_index.shape[-1]))
+            ss_prob.append(
+                probs.view(len(attn_metadata.block_tables), -1,
+                           probs.shape[-1]))
+
+            for i in range(len(self.tree_buffer['tree_indices'])):
+                topk_index, out_hidden = self._step(i, input_ids, positions,
+                                                    hidden_states, kv_caches,
+                                                    attn_metadata,
+                                                    sampling_metadata,
+                                                    ss_token, ss_prob,
+                                                    topk_index, out_hidden)
+
+            ss_token = torch.cat(ss_token, dim=1)
+            ss_prob = torch.cat(ss_prob, dim=1)
+
+            batch = len(attn_metadata.block_tables)
+            candidates = torch.cat(
+                [input_ids.reshape(-1, 1),
+                 ss_token.view(batch, -1)], dim=-1)
+
+            tree_candidates = candidates[:, self.
+                                         targrt_tree_buffer["tree_indices"]]
+
+            tree_candidates_ext = torch.cat([
+                tree_candidates,
+                torch.zeros((batch, 1),
+                            dtype=torch.long,
+                            device=tree_candidates.device)
+            ],
+                                            dim=-1)
+
+            cart_candidates = tree_candidates_ext[:, self.targrt_tree_buffer[
+                "retrieve_indices"]]
+
+            candidates_prob = torch.cat([
+                torch.ones(
+                    (batch, 1), device=ss_prob.device, dtype=torch.float32),
+                ss_prob.view(batch, -1)
+            ],
+                                        dim=-1)
+            tree_candidates_prob = candidates_prob[:, self.targrt_tree_buffer[
+                "tree_indices"]]
+            tree_candidates_prob_ext = torch.cat([
+                tree_candidates_prob,
+                torch.ones((batch, 1),
+                           dtype=torch.float32,
+                           device=tree_candidates_prob.device)
+            ],
+                                                 dim=-1)
+            cart_candidates_prob = tree_candidates_prob_ext[:, self.
+                                                            targrt_tree_buffer[
+                                                                "retrieve_indices"]]
+            outputs: List[List[Optional[SamplerOutput]]] = []
+
+            for idx_x in range(batch):
+                output: List[Optional[SamplerOutput]] = []
+                for idx_y in range(len(cart_candidates[idx_x])):
+                    # for idx_y in range(2):
+                    output.append(
+                        SamplerOutput(
+                            outputs=None,
+                            sampled_token_probs=cart_candidates_prob[idx_x]
+                            [idx_y][1:],
+                            logprobs=torch.rand(6 - 1,
+                                                32000,
+                                                device=cart_candidates.device,
+                                                dtype=torch.float32),
+                            sampled_token_ids=cart_candidates[idx_x][idx_y]
+                            [1:],
+                        ))
+                outputs.append(output)
+            return outputs, tree_candidates[:, 1:]
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
@@ -938,6 +952,29 @@ class Eagle(nn.Module):
                               self.config.topk,
                               dim=-1).values
         return next_tokens
+
+    @nvtx_range("eagle.defragment_accepted_kv_blocks")
+    def defragment_accepted_kv_blocks(
+            self,
+            seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+            token_ids: torch.Tensor, best_candidate_index: int,
+            kv_caches: List[torch.Tensor]):
+        # slot_mapping: List[int] = []
+        # for seq_group_metadata in seq_group_metadata_list:
+        #     seq_ids = list(seq_group_metadata.seq_data.keys())
+        #     is_prompt = seq_group_metadata.is_prompt
+        #     assert(is_prompt == False)
+        #     for seq_id in seq_ids:
+        #         seq_data = seq_group_metadata.seq_data[seq_id]
+        #         context_len = seq_data.get_num_computed_tokens()
+        #         # seq_len = seq_data.get_len()
+        #         block_table = seq_group_metadata.block_tables[seq_id]
+        #         for i in range(context_len, context_len + sum(sum(inner_list) for inner_list in self.tree_buffer["repeat_nums"])):
+        #             block_number = block_table[i // self.block_size]
+        #             block_offset = i % self.block_size
+        #             slot = block_number * self.block_size + block_offset
+        #             slot_mapping.append(slot)
+        pass
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [

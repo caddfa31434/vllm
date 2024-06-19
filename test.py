@@ -1,20 +1,16 @@
-import triton.language as tl
-import triton
+# save it as `test.py` , and run it with `NCCL_DEBUG=TRACE torchrun --nproc-per-node=8 test.py`
+# adjust `--nproc-per-node` to the number of GPUs you want to use.
 import torch
+import torch.distributed as dist
+import os
 
-
-@triton.jit
-def copy_kernel(x_ptr, z_ptr, n, bs: tl.constexpr):
-    pid = tl.program_id(0)
-    offs = pid * bs + tl.arange(0, bs)[:, None]
-    mask = offs < n
-    x = tl.load(x_ptr + offs, mask)
-    tl.store(z_ptr + offs, x, mask)
-
-
-x = torch.arange(0, 10).unsqueeze(1).cuda().contiguous().float()
-z = torch.zeros_like(x)
-copy_kernel[(3, )](x, z, n=10, bs=4)
-
-print(x)
-print(z)
+# os.environ['VLLM_ATTENTION_BACKEND'] = 'XFORMERS'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2,7'
+dist.init_process_group(backend="nccl")
+data = torch.FloatTensor([
+    1,
+] * 128).to(f"cuda:{dist.get_rank()}")
+dist.all_reduce(data, op=dist.ReduceOp.SUM)
+torch.cuda.synchronize()
+value = data.mean().item()
+assert value == dist.get_world_size()

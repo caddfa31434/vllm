@@ -431,25 +431,26 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Generate proposals using draft worker.
         execute_model_req.extra_inputs = self.scorer_state
         proposals = self.proposer_worker.get_spec_proposals(execute_model_req)
+        # print(f"{proposals=}")
 
         execute_model_req.extra_inputs = {}
         proposal_scores = self.scorer.score_proposals(
             execute_model_req,
             proposals,
         )
-
+        # print(f"{proposal_scores=}")
+        # print(f"{proposal_scores.token_ids=}")
         best_candidate_index, accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_speculative_tokens)
 
-        self._defragment_accepted_kv_blocks(
-            execute_model_req.seq_group_metadata_list, proposal_scores,
-            proposals, best_candidate_index,
-            execute_model_req.num_speculative_tokens)
-
-        # print(f"{proposals=}")
-        # print(f"{proposal_scores=}")
+        print(f"{best_candidate_index=}")
         print(f"{accepted_token_ids=}")
+
+        self._defragment_accepted_kv_blocks(execute_model_req, proposal_scores,
+                                            proposals, best_candidate_index)
+
+        # print(f"{proposal_scores.token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
@@ -457,15 +458,19 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             k=execute_model_req.num_speculative_tokens,
             extra_tensor_data=proposal_scores.extra_tensor_data)
 
-    @nvtx_range("spec_decode_worker._verify_tokens")
+    @nvtx_range("spec_decode_worker._defragment_accepted_kv_blocks")
     def _defragment_accepted_kv_blocks(
         self,
-        seq_group_metadata_list: List[SequenceGroupMetadata],
+        execute_model_req: ExecuteModelRequest,
         proposal_scores: SpeculativeScores,
         proposals: SpeculativeProposals,
-        best_candidate_index: int,
-        max_proposal_len: int,
+        best_candidate_index: torch.Tensor,
     ):
+        self.scorer_worker.defragment_accepted_kv_blocks(
+            execute_model_req, proposal_scores.token_ids, best_candidate_index)
+        self.proposer_worker.defragment_accepted_kv_blocks(
+            execute_model_req, proposals.proposal_token_ids,
+            best_candidate_index)
         pass
 
     @nvtx_range("spec_decode_worker._verify_tokens")
@@ -501,7 +506,8 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # Get probabilities of target model, excluding bonus token.
         proposal_verifier_probs = proposal_scores.probs[spec_indices, :, :-1]
 
-        proposal_verifier_token_ids = proposal_scores.token_ids[spec_indices, :, :]
+        proposal_verifier_token_ids = proposal_scores.token_ids[
+            spec_indices, :, :-1]
 
         # Get non-speculative sampled tokens from target model. non-speculative sampled tokens needs no N candidate
         non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, 0]

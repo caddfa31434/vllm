@@ -46,8 +46,12 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, kv_cache_scales_loader)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.sequence import SamplerOutput
+from vllm.sequence import SamplerOutput, TensorData, SequenceGroupMetadata
 from vllm.utils import is_hip, print_warning_once
+from vllm.spec_decode.util import (create_sequence_group_output,
+                                   get_all_num_logprobs, get_all_seq_ids,
+                                   get_sampled_token_logprobs, nvtx_range,
+                                   split_batch_by_proposal_len)
 
 
 class LlamaMLP(nn.Module):
@@ -296,7 +300,6 @@ class LlamaModel(nn.Module):
         return hidden_states
 
 
-
 def pad_path(path, length, pad_value=-2):
     return path + [pad_value] * (length - len(path))
 
@@ -485,16 +488,15 @@ class LlamaForCausalLM(nn.Module):
                         b = []
                 else:
                     parent = cur_parent
-                tree_indices[start + j +
-                             1] = cur_tree_choice[-1] + self.tree_topk * (
-                                 i + bias) + 1
+                tree_indices[
+                    start + j +
+                    1] = cur_tree_choice[-1] + self.tree_topk * (i + bias) + 1
                 p_indices[start + j] = inlayer_bias
                 if len(b) > 0:
                     b_indices[start + j] = copy.deepcopy(b)
                 else:
                     b_indices[start + j] = []
-                b.append(cur_tree_choice[-1] + self.tree_topk * (i + bias) +
-                         1)
+                b.append(cur_tree_choice[-1] + self.tree_topk * (i + bias) + 1)
             start += depth_counts[i]
 
         p_indices = [-1] + p_indices
@@ -584,47 +586,52 @@ class LlamaForCausalLM(nn.Module):
         return tree_buffers
 
     def _make_causal_mask(
-            self,
-            input_ids_shape: torch.Size,
-            dtype: torch.dtype,
-            device: torch.device,
-            past_key_values_length: int = 0,
+        self,
+        input_ids_shape: torch.Size,
+        dtype: torch.dtype,
+        device: torch.device,
+        past_key_values_length: int = 0,
     ):
         bsz, tgt_len = input_ids_shape
-        mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
+        mask = torch.full((tgt_len, tgt_len),
+                          torch.finfo(dtype).min,
+                          device=device)
         mask_cond = torch.arange(mask.size(-1), device=device)
-        mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+        mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1),
+                          0)
         mask = mask.to(dtype)
 
         if past_key_values_length > 0:
             mask = torch.cat(
                 [
-                    torch.zeros(
-                        tgt_len, past_key_values_length, dtype=dtype, device=device
-                    ),
+                    torch.zeros(tgt_len,
+                                past_key_values_length,
+                                dtype=dtype,
+                                device=device),
                     mask,
                 ],
                 dim=-1,
             )
-        return mask[None, None, :, :].expand(
-            bsz, 1, tgt_len, tgt_len + past_key_values_length
-        )
+        return mask[None, None, :, :].expand(bsz, 1, tgt_len,
+                                             tgt_len + past_key_values_length)
 
-    def _expand_mask(self, mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+    def _expand_mask(self,
+                     mask: torch.Tensor,
+                     dtype: torch.dtype,
+                     tgt_len: Optional[int] = None):
         bsz, src_len = mask.size()
         tgt_len = tgt_len if tgt_len is not None else src_len
 
-        expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+        expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len,
+                                                      src_len).to(dtype)
 
         inverted_mask = 1.0 - expanded_mask
 
-        return inverted_mask.masked_fill(
-            inverted_mask.to(torch.bool), torch.finfo(dtype).min
-        )
+        return inverted_mask.masked_fill(inverted_mask.to(torch.bool),
+                                         torch.finfo(dtype).min)
 
-    def _prepare_decoder_attention_mask(
-            self, attention_mask, input_shape, inputs_embeds, past_key_values_length
-    ):
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape,
+                                        inputs_embeds, past_key_values_length):
         # create causal mask
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         combined_attention_mask = None
@@ -639,27 +646,26 @@ class LlamaForCausalLM(nn.Module):
 
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            expanded_attn_mask = self._expand_mask(
-                attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]
-            ).to(inputs_embeds.device)
-            combined_attention_mask = (
-                expanded_attn_mask
-                if combined_attention_mask is None
-                else expanded_attn_mask + combined_attention_mask
-            )
-
+            expanded_attn_mask = self._expand_mask(attention_mask,
+                                                   inputs_embeds.dtype,
+                                                   tgt_len=input_shape[-1]).to(
+                                                       inputs_embeds.device)
+            combined_attention_mask = (expanded_attn_mask
+                                       if combined_attention_mask is None else
+                                       expanded_attn_mask +
+                                       combined_attention_mask)
 
         if hasattr(self, "tree_mask") and self.tree_mask is not None:
             tree_mask = self.tree_mask
             tree_len = tree_mask.size(-1)
             bs = combined_attention_mask.size(0)
             combined_attention_mask[:, :, -tree_len:, -tree_len:][
-                tree_mask.repeat(bs,1,1,1) == 0
-                ] = combined_attention_mask.min()
+                tree_mask.repeat(bs, 1, 1,
+                                 1) == 0] = combined_attention_mask.min()
 
         return combined_attention_mask
 
-
+    @nvtx_range("llama.forward")
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -669,10 +675,14 @@ class LlamaForCausalLM(nn.Module):
         sampling_metadata: SamplingMetadata,
     ) -> torch.Tensor:
         if attn_metadata.num_decode_tokens > 0 and attn_metadata.max_query_len > 1:
+            position_ids = self.target_tree_buffer["tree_position_ids"][
+                None, :].to(attn_metadata.context_lens_tensor.device
+                            ) + attn_metadata.context_lens_tensor
+
             # Initialize a mask of zeros with the desired shape (4x9)
             mask = torch.zeros(
                 (len(attn_metadata.decode_metadata.seq_lens_tensor),
-                max(attn_metadata.decode_metadata.seq_lens_tensor)),
+                 max(attn_metadata.decode_metadata.seq_lens_tensor)),
                 device=input_ids.device,
                 dtype=torch.int32)
 
@@ -689,26 +699,38 @@ class LlamaForCausalLM(nn.Module):
             # )
             attention_mask = self._prepare_decoder_attention_mask(
                 mask, (len(attn_metadata.decode_metadata.seq_lens_tensor),
-                   len(self.target_tree_buffer["tree_attn_mask"][0][0])), kv_caches[0],
-            max(attn_metadata.decode_metadata.context_lens_tensor))
-            
+                       len(self.target_tree_buffer["tree_attn_mask"][0][0])),
+                kv_caches[0],
+                max(attn_metadata.decode_metadata.context_lens_tensor))
+
             attn_metadata.decode_metadata.attn_masks = attention_mask
-            hidden_states = self.model(input_ids, positions, kv_caches,
-                                    attn_metadata)
+            hidden_states = self.model(input_ids, position_ids, kv_caches,
+                                       attn_metadata)
             sampling_metadata.selected_token_indices = torch.arange(
-            0, hidden_states.shape[0]).to(
-                sampling_metadata.selected_token_indices.device)
+                0, hidden_states.shape[0]).to(
+                    sampling_metadata.selected_token_indices.device)
             logits = self.logits_processor(self.lm_head.weight, hidden_states,
-                                       sampling_metadata)
+                                           sampling_metadata)
             probs = torch.softmax(logits, dim=-1)
-            
-            logits = logits.view(len(attn_metadata.block_tables),-1,logits.shape[-1])[:, self.target_tree_buffer["retrieve_indices"]]
-            probs = probs.view(len(attn_metadata.block_tables),-1,probs.shape[-1])[:, self.target_tree_buffer["retrieve_indices"]]
-            token_ids = torch.argmax(logits[:, :, :-1], dim=-1)
-            return token_ids, probs, hidden_states.view(len(attn_metadata.block_tables),-1,hidden_states.shape[-1])[:,  self.target_tree_buffer["retrieve_indices"]]
+
+            logits = logits.view(
+                len(attn_metadata.block_tables), -1,
+                logits.shape[-1])[:,
+                                  self.target_tree_buffer["retrieve_indices"]]
+            probs = probs.view(
+                len(attn_metadata.block_tables), -1,
+                probs.shape[-1])[:,
+                                 self.target_tree_buffer["retrieve_indices"]]
+            extra_tensor_data = TensorData()
+            extra_tensor_data["hidden_states"] = hidden_states.view(
+                len(attn_metadata.block_tables), -1, hidden_states.shape[-1]
+            )[:, self.target_tree_buffer["retrieve_indices"]]
+            token_ids = torch.argmax(logits, dim=-1)
+
+            return token_ids, probs, extra_tensor_data
         else:
             hidden_states = self.model(input_ids, positions, kv_caches,
-                                    attn_metadata)
+                                       attn_metadata)
             return hidden_states
 
     def compute_logits(self, hidden_states: torch.Tensor,
@@ -724,6 +746,82 @@ class LlamaForCausalLM(nn.Module):
     ) -> Optional[SamplerOutput]:
         next_tokens = self.sampler(logits, sampling_metadata)
         return next_tokens
+
+    def split_kv_cache(
+        self,
+        kv_cache: torch.Tensor,
+        num_kv_heads: int,
+        head_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = 16 // kv_cache.element_size()
+        num_blocks = kv_cache.shape[1]
+
+        key_cache = kv_cache[0]
+        key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
+                                   -1, x)
+        value_cache = kv_cache[1]
+        value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        return key_cache, value_cache
+
+    @nvtx_range("llama.defragment_accepted_kv_blocks")
+    def defragment_accepted_kv_blocks(
+            self,
+            seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
+            token_ids: torch.Tensor, best_candidate_index: torch.Tensor,
+            kv_caches: List[torch.Tensor]):
+        self.block_size = 16
+        for seq_group_metadata in seq_group_metadata_list:
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            is_prompt = seq_group_metadata.is_prompt
+            assert (is_prompt == False)
+            slot_mapping: List[int] = []
+            for bs, seq_id in enumerate(seq_ids):
+                seq_data = seq_group_metadata.seq_data[seq_id]
+                context_len = seq_data.get_num_computed_tokens()
+                # seq_len = seq_data.get_len()
+                block_table = seq_group_metadata.block_tables[seq_id]
+                for i in range(
+                        context_len, context_len +
+                        len(self.target_tree_buffer["tree_indices"])):
+                    block_number = block_table[i // self.block_size]
+                    block_offset = i % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append(slot)
+                for index, element in enumerate(
+                        self.target_tree_buffer["retrieve_indices"][
+                            best_candidate_index[bs]]):
+                    if element != -1 and element != index:
+                        for layer_id in range(len(self.model.layers)):
+                            # print(f"{element=}")
+                            key_cache, value_cache = self.split_kv_cache(
+                                kv_caches[layer_id],
+                                self.model.layers[0].self_attn.num_kv_heads,
+                                self.model.layers[0].self_attn.head_dim)
+                            src_block_number = int(
+                                block_table[slot_mapping[element] //
+                                            self.block_size])
+                            src_block_offset = slot_mapping[
+                                element] % self.block_size
+                            dst_block_number = int(
+                                block_table[slot_mapping[index] //
+                                            self.block_size])
+                            dst_block_offset = slot_mapping[
+                                index] % self.block_size
+
+                            key_cache[dst_block_number, :, :,
+                                      dst_block_offset, :] = key_cache[
+                                          src_block_number, :, :,
+                                          src_block_offset, :]
+                            value_cache[dst_block_number, :, :,
+                                        dst_block_offset] = value_cache[
+                                            src_block_number, :, :,
+                                            src_block_offset]
+
+                for layer_id in range(len(self.model.layers)):
+                    key_cache, value_cache = self.split_kv_cache(
+                        kv_caches[layer_id],
+                        self.model.layers[0].self_attn.num_kv_heads,
+                        self.model.layers[0].self_attn.head_dim)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
@@ -776,13 +874,15 @@ class LlamaForCausalLM(nn.Module):
                                         default_weight_loader)
                 weight_loader(param, loaded_weight)
 
-        self.tree_choices = [[0], [1], [2], [3], [0, 0], [0, 1], [0, 2],
-                             [1, 0], [1, 1], [2, 0], [2, 1], [3, 0], [0, 0, 0],
-                             [0, 0, 1], [0, 0, 2], [0, 1, 0], [0, 1, 1],
-                             [0, 2, 0], [0, 2, 1], [1, 0, 0], [0, 0, 0, 0],
-                             [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
-                             [0, 0, 0, 0, 1]]
-        self.tree_topk  = 10
+        # self.tree_choices = [[0], [1], [2], [3], [0, 0], [0, 1], [0, 2],
+        #                      [1, 0], [1, 1], [2, 0], [2, 1], [3, 0], [0, 0, 0],
+        #                      [0, 0, 1], [0, 0, 2], [0, 1, 0], [0, 1, 1],
+        #                      [0, 2, 0], [0, 2, 1], [1, 0, 0], [0, 0, 0, 0],
+        #                      [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
+        #                      [0, 0, 0, 0, 1]]
+        self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0],
+                             [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
+        self.tree_topk = 10
         self.target_tree_buffer = self.generate_target_tree_buffers(
             self.tree_choices)
         self.tree_mask = self.target_tree_buffer["tree_attn_mask"]

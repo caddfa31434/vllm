@@ -73,11 +73,12 @@ class EagleScorer(SpeculativeScorer):
 
         proposal_tree_token_ids_list = proposals.tree_candidates.tolist()
 
-        (spec_indices, non_spec_indices, target_seq_group_metadata_list) = self._prepare_tree_inputs(
-                    seq_group_metadata_list=execute_model_req.seq_group_metadata_list,
-                    proposal_token_ids_list=proposal_tree_token_ids_list,
-                    proposal_lens_list=proposal_lens_list,
-                )
+        (spec_indices, non_spec_indices,
+         target_seq_group_metadata_list) = self._prepare_tree_inputs(
+             seq_group_metadata_list=execute_model_req.seq_group_metadata_list,
+             proposal_token_ids_list=proposal_tree_token_ids_list,
+             proposal_lens_list=proposal_lens_list,
+         )
 
         # (spec_indices, non_spec_indices, target_seq_group_metadata_list,
         #  num_scoring_tokens) = self._expand_batch(
@@ -108,9 +109,9 @@ class EagleScorer(SpeculativeScorer):
             probs=all_probs,
             token_ids=all_tokens,
             logprobs=torch.rand(all_tokens.shape[0],
-                             all_tokens.shape[1],
-                            5,
-                            32000,
+                                all_tokens.shape[1],
+                                all_tokens.shape[2],
+                                32000,
                                 device=all_tokens.device,
                                 dtype=torch.float32),
             extra_tensor_data=all_extra_output_data,
@@ -142,8 +143,7 @@ class EagleScorer(SpeculativeScorer):
 
         target_seq_group_metadata_list = self._create_scoring_model_input_v2(
             seq_group_metadata_list=spec_seqs,
-            proposal_token_ids=proposal_token_ids_list
-        )
+            proposal_token_ids=proposal_token_ids_list)
 
         num_scoring_tokens = len(target_seq_group_metadata_list)
         target_seq_group_metadata_list.extend(non_spec_seqs)
@@ -344,8 +344,7 @@ class EagleScorer(SpeculativeScorer):
         # if len(proposal_token_ids) > 1:
         #     target_seq_group_metadata.num_lookahead_slot_mapping_dirty_offset = (
         #         candidate_index * len(proposal_token_ids[0][0]))
-        target_seq_group_metadata_list.append(
-            target_seq_group_metadata)
+        target_seq_group_metadata_list.append(target_seq_group_metadata)
 
         return target_seq_group_metadata_list
 
@@ -408,7 +407,8 @@ class EagleScorer(SpeculativeScorer):
         # and evaluate one by one right now. context_len is seq_len - 1 because
         # the kv cache is filled by a previous batch in the batch expansion.
         for data in new_seq_data_dict.values():
-            data.update_num_computed_tokens(data.get_len() - len(token_ids) - 1)
+            data.update_num_computed_tokens(data.get_len() - len(token_ids) -
+                                            1)
 
         return SequenceGroupMetadata(
             request_id=seq_group_metadata.request_id,
