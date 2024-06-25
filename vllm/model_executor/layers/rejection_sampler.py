@@ -383,32 +383,25 @@ class RejectionSampler(nn.Module):
             best_candidate_index: The index of the best candidate sequence.
                 shape = [batch_size]
         """
-        if self._strict_mode:
-            self._raise_if_incorrect_shape_v2(target_probs, bonus_token_ids,
-                                              draft_probs, draft_token_ids)
-            self._raise_if_incorrect_dtype(target_probs, bonus_token_ids,
-                                           draft_probs, draft_token_ids)
-            self._raise_if_inconsistent_device(target_probs, bonus_token_ids,
-                                               draft_probs, draft_token_ids)
-            self._raise_if_out_of_bounds_vocab(target_probs.shape[-1],
-                                               bonus_token_ids,
-                                               draft_token_ids)
+        batch_size = target_token_ids.shape[0]
+        num_speculative_tokens = target_token_ids.shape[-1]
+        num_bonus_tokens = bonus_token_ids.shape[-1]
 
         # Find the tokens that match the maximum logits for each position in the sequence
         posterior_mask = (target_token_ids == draft_token_ids).int()
-        candidates_accept_length = (torch.cumprod(posterior_mask,
-                                                  dim=-1)).sum(dim=-1)
+        candidates_accept_length = torch.cumprod(posterior_mask, dim=-1).sum(dim=-1)
         accept_length = candidates_accept_length.max(dim=1).values
-        best_candidate_index = torch.argmax(candidates_accept_length,
-                                            dim=-1).to(torch.long)
-        output_token_ids = draft_token_ids[tuple(range(len(accept_length))),
-                                           best_candidate_index.tolist()]
-        output_token_ids = torch.zeros(
-            (target_token_ids.shape[0], target_token_ids.shape[-1] + 1),
-            device=draft_token_ids.device,
-            dtype=int) - 1
+        best_candidate_index = torch.argmax(candidates_accept_length, dim=-1).to(torch.long)
 
-        for i in range(target_token_ids.shape[0]):
+        # Initialize output_token_ids with -1
+        output_token_ids = torch.full(
+            (batch_size, num_speculative_tokens + num_bonus_tokens),
+            -1,
+            device=draft_token_ids.device,
+            dtype=torch.long
+        )
+
+        for i in range(batch_size):
             draft_slice = draft_token_ids[
                 i, best_candidate_index[i], :accept_length[i]]
             target_slice = (torch.cat([target_token_ids, bonus_token_ids],
@@ -416,26 +409,13 @@ class RejectionSampler(nn.Module):
                                                accept_length[i]].unsqueeze(0)
             combined_slice = torch.cat((draft_slice, target_slice), dim=0)
             padded_output_token_ids = torch.zeros(target_token_ids.shape[-1] +
-                                                  1) - 1
+                                                  1, device=draft_token_ids.device) - 1
             length_to_copy = min(combined_slice.size(0),
                                  target_token_ids.shape[-1] + 1)
             padded_output_token_ids[:
                                     length_to_copy] = combined_slice[:
                                                                      length_to_copy]
             output_token_ids[i] = padded_output_token_ids
-
-        # accepted, recovered_token_ids = self._batch_modified_rejection_sampling_v2(
-        #     target_probs,
-        #     draft_probs,
-        #     draft_token_ids,
-        # )
-
-        # output_token_ids, best_candidate_index = self._create_output_v2(
-        #     accepted,
-        #     recovered_token_ids,
-        #     draft_token_ids,
-        #     bonus_token_ids,
-        # )
 
         return output_token_ids, best_candidate_index
 

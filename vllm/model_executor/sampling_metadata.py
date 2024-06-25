@@ -220,9 +220,10 @@ def _prepare_seq_groups(
                                   if do_sample else query_len)
             sample_len = num_prefill_sample if do_sample else 0
         else:
+            assert query_lens is not None
             # Decode
             prompt_logprob_len = 0
-            sample_len = len(seq_ids) if do_sample else 0
+            sample_len = query_lens[i] if do_sample else 0
 
         # Update indices to select from the model output.
         """
@@ -386,23 +387,22 @@ class SamplingTensors:
                 presence_penalties += [0] * prefill_len
                 frequency_penalties += [0] * prefill_len
                 repetition_penalties += [1] * prefill_len
-                prompt_tokens.extend([] for _ in range(prefill_len))
-                output_tokens.extend([] for _ in range(prefill_len))
 
             if seq_group.do_sample:
                 sample_lens = len(seq_group.sample_indices)
-                assert sample_lens == len(seq_ids)
+                assert sample_lens >= len(seq_ids)
                 for seq_id in seq_ids:
                     seq_data = seq_group.seq_data[seq_id]
-                    prompt_tokens.append(seq_data.prompt_token_ids)
-                    output_tokens.append(seq_data.output_token_ids)
-                temperatures += [temperature] * len(seq_ids)
-                top_ps += [top_p] * len(seq_ids)
-                top_ks += [top_k] * len(seq_ids)
-                min_ps += [min_p] * len(seq_ids)
-                presence_penalties += [p] * len(seq_ids)
-                frequency_penalties += [f] * len(seq_ids)
-                repetition_penalties += [r] * len(seq_ids)
+                    if do_penalties:
+                        prompt_tokens.append(seq_data.prompt_token_ids)
+                        output_tokens.append(seq_data.output_token_ids)
+                temperatures += [temperature] * sample_lens
+                top_ps += [top_p] * sample_lens
+                top_ks += [top_k] * sample_lens
+                min_ps += [min_p] * sample_lens
+                presence_penalties += [p] * sample_lens
+                frequency_penalties += [f] * sample_lens
+                repetition_penalties += [r] * sample_lens
 
             if is_prompt:
                 prompt_best_of.append(sampling_params.best_of)
@@ -421,6 +421,20 @@ class SamplingTensors:
                     is_greedy=is_greedy)
                 sampling_seeds.append(seq_seeds)
             sample_indices.extend(seq_group.sample_indices)
+
+        if do_penalties:
+            for seq_group in sampling_metadata.seq_groups:
+                seq_ids = seq_group.seq_ids
+                if (seq_group.is_prompt
+                        and sampling_params.prompt_logprobs is not None):
+                    prefill_len = len(seq_group.prompt_logprob_indices)
+                    prompt_tokens.extend([] for _ in range(prefill_len))
+                    output_tokens.extend([] for _ in range(prefill_len))
+                if seq_group.do_sample:
+                    for seq_id in seq_ids:
+                        seq_data = seq_group.seq_data[seq_id]
+                        prompt_tokens.append(seq_data.prompt_token_ids)
+                        output_tokens.append(seq_data.output_token_ids)
 
         sampling_tensors = SamplingTensors.from_lists(
             temperatures, top_ps, top_ks, min_ps, presence_penalties,
@@ -443,18 +457,22 @@ class SamplingTensors:
         # Note that the performance will be very bad without
         # pinned memory.
         pin_memory = is_pin_memory_available()
-        prompt_max_len = max([len(tokens) for tokens in prompt_tokens],
-                             default=0)
-        prompt_padded_tokens = [
-            tokens + [vocab_size] * (prompt_max_len - len(tokens))
-            for tokens in prompt_tokens
-        ]
-        output_max_len = max([len(tokens) for tokens in output_tokens],
-                             default=0)
-        output_padded_tokens = [
-            tokens + [vocab_size] * (output_max_len - len(tokens))
-            for tokens in output_tokens
-        ]
+
+        do_penalties = prompt_tokens or output_tokens
+
+        if do_penalties:
+            prompt_max_len = max([len(tokens) for tokens in prompt_tokens],
+                                 default=0)
+            prompt_padded_tokens = [
+                tokens + [vocab_size] * (prompt_max_len - len(tokens))
+                for tokens in prompt_tokens
+            ]
+            output_max_len = max([len(tokens) for tokens in output_tokens],
+                                 default=0)
+            output_padded_tokens = [
+                tokens + [vocab_size] * (output_max_len - len(tokens))
+                for tokens in output_tokens
+            ]
 
         temperatures_t = torch.tensor(
             temperatures,
@@ -504,18 +522,22 @@ class SamplingTensors:
             dtype=torch.long,
             pin_memory=pin_memory,
         )
-        prompt_tensor = torch.tensor(
-            prompt_padded_tokens,
-            device="cpu",
-            dtype=torch.long,
-            pin_memory=pin_memory,
-        )
-        output_tensor = torch.tensor(
-            output_padded_tokens,
-            device="cpu",
-            dtype=torch.long,
-            pin_memory=pin_memory,
-        )
+        if do_penalties:
+            prompt_tensor = torch.tensor(
+                prompt_padded_tokens,
+                device="cpu",
+                dtype=torch.long,
+                pin_memory=pin_memory,
+            )
+            output_tensor = torch.tensor(
+                output_padded_tokens,
+                device="cpu",
+                dtype=torch.long,
+                pin_memory=pin_memory,
+            )
+        else:
+            prompt_tensor = None
+            output_tensor = None
         # need to transpose and make contiguous to
         # copy the tensor correctly.
         # [batch_size, n_seeds] -> [n_seeds, batch_size]
@@ -538,6 +560,16 @@ class SamplingTensors:
             extra_seeds_gpu = None
         sampling_seeds_gpu = sampling_seeds_gpu[:num_base_seeds]
 
+        if do_penalties:
+            prompt_tokens_gpu = prompt_tensor.to(device=device,
+                                                 non_blocking=True)
+            output_tokens_gpu = output_tensor.to(device=device,
+                                                 non_blocking=True)
+        else:
+            empty_tensor = torch.empty(0, device=device, dtype=torch.long)
+            prompt_tokens_gpu = empty_tensor
+            output_tokens_gpu = empty_tensor
+
         return cls(
             temperatures=temperatures_t.to(device=device, non_blocking=True),
             top_ps=top_ps_t.to(device=device, non_blocking=True),
@@ -549,8 +581,8 @@ class SamplingTensors:
                                                          non_blocking=True),
             repetition_penalties=repetition_penalties_t.to(device=device,
                                                            non_blocking=True),
-            prompt_tokens=prompt_tensor.to(device=device, non_blocking=True),
-            output_tokens=output_tensor.to(device=device, non_blocking=True),
+            prompt_tokens=prompt_tokens_gpu,
+            output_tokens=output_tokens_gpu,
             sampling_seeds=sampling_seeds_gpu,
             sample_indices=sample_indices_t.to(device=device,
                                                non_blocking=True),

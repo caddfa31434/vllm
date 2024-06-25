@@ -1,10 +1,11 @@
+from ast import Return
 import torch
 import triton
 import triton.language as tl
 import pdb
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["max_input_len", "stride_am_ql", "stride_am_kl", "stride_btbs", "q_len"])
 def _fwd_kernel_tree_attn(
     Q,
     K,
@@ -145,8 +146,7 @@ def _fwd_kernel_tree_attn(
     tl.store(out_ptrs, acc, mask=offs_m[:, None] < cur_batch_seq_len)
     return
 
-
-@torch.no_grad()
+@torch.inference_mode()
 def tree_attention_fwd(
     o,
     q,
@@ -191,7 +191,7 @@ def tree_attention_fwd(
     assert q_len <= BLOCK_M, "q_len should be less than BLOCK_M"
     x = k.shape[4]  # k划分的维度
     BLOCK_N = 128
-    _fwd_kernel_tree_attn[grid](q,
+    cached_bin = _fwd_kernel_tree_attn[grid](q,
                                 k,
                                 v,
                                 o,
@@ -230,4 +230,4 @@ def tree_attention_fwd(
                                 BLOCK_N=BLOCK_N,
                                 num_stages=1,
                                 num_warps=8)
-    return o
+    return cached_bin

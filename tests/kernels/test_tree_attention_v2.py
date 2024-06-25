@@ -72,7 +72,6 @@ def create_tree_attention_mask(context_len, prompt_len, tree_width,
 
 
 def create_tree_attention_mask_v2(context_len, q_len, num_kv_head, dtype):
-    # 创建一个全零的掩码矩阵
     mask = torch.zeros((num_kv_head, q_len, context_len), dtype=dtype)
 
     min_value = torch.finfo(dtype).min

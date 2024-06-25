@@ -122,6 +122,8 @@ class FlashAttentionMetadata(AttentionMetadata):
     _cached_prefill_metadata: Optional["FlashAttentionMetadata"] = None
     _cached_decode_metadata: Optional["FlashAttentionMetadata"] = None
 
+    attn_masks: Optional[torch.Tensor] = None
+
     @property
     def prefill_metadata(self) -> Optional["FlashAttentionMetadata"]:
         if self.num_prefills == 0:

@@ -223,13 +223,13 @@ class Worker(WorkerBase):
 
     def defragment_accepted_kv_blocks(self,
                                       execute_model_req: ExecuteModelRequest,
-                                      token_ids: torch.Tensor,
-                                      best_candidate_index: torch.Tensor):
+                                      best_candidate_index: torch.Tensor,
+                                      accepted_token_ids: torch.Tensor):
         seq_group_metadata_list = execute_model_req.seq_group_metadata_list
         self.model_runner.defragment_accepted_kv_blocks(
             seq_group_metadata_list,
-            token_ids,
             best_candidate_index,
+            accepted_token_ids,
             self.gpu_cache,
         )
 

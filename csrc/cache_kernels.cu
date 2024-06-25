@@ -93,7 +93,77 @@ __global__ void copy_blocks_kernel(int64_t* key_cache_ptrs,
   }
 }
 
+// Grid: (num_layers)
+template <typename scalar_t>
+__global__ void move_accepted_caches_kernel(int64_t* key_cache_ptrs,
+                                            int64_t* value_cache_ptrs,
+                                            const int64_t* __restrict__ src_slot_mapping,
+                                            const int64_t* __restrict__ dst_slot_mapping) {
+  const int layer_idx = blockIdx.x;
+
+  scalar_t* key_cache = reinterpret_cast<scalar_t*>(key_cache_ptrs[layer_idx]);
+  scalar_t* value_cache = reinterpret_cast<scalar_t*>(value_cache_ptrs[layer_idx]);
+
+}
+
 }  // namespace vllm
+
+void move_accepted_caches(
+  std::vector<torch::Tensor>& key_caches,  //List of [num_blocks, block_size, num_heads, head_size]
+  std::vector<torch::Tensor>& value_caches,  //List of [num_blocks, block_size, num_heads, head_size]
+  torch::Tensor& src_slot_mapping,  // [num_tokens]
+  torch::Tensor& dst_slot_mapping  // [num_tokens]
+) {
+  int num_layers = key_caches.size();
+  TORCH_CHECK(num_layers == value_caches.size());
+  if (num_layers == 0) {
+    return;
+  }
+  torch::Device key_cache_device = key_caches[0].device();
+  TORCH_CHECK(key_cache_device.is_cuda());
+  torch::Device value_cache_device = value_caches[0].device();
+  TORCH_CHECK(value_cache_device.is_cuda());
+  torch::Device src_slot_mapping_device = src_slot_mapping.device();
+  TORCH_CHECK(src_slot_mapping.is_cuda());
+  torch::Device dst_slot_mapping_device = dst_slot_mapping.device();
+  TORCH_CHECK(dst_slot_mapping.is_cuda());
+
+  // Create data structures for the kernel.
+  // Create an array of pointers to the key and value caches.
+  int64_t key_cache_ptrs[num_layers];
+  int64_t value_cache_ptrs[num_layers];
+  for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+    key_cache_ptrs[layer_idx] =
+        reinterpret_cast<int64_t>(key_caches[layer_idx].data_ptr());
+    value_cache_ptrs[layer_idx] =
+        reinterpret_cast<int64_t>(value_caches[layer_idx].data_ptr());
+  }
+
+  // Move the data structures to the GPU.
+  // NOTE: This synchronizes the CPU and GPU.
+  torch::Tensor key_cache_ptrs_tensor =
+      torch::from_blob(key_cache_ptrs, {num_layers}, torch::kInt64)
+          .to(cache_device);
+  torch::Tensor value_cache_ptrs_tensor =
+      torch::from_blob(value_cache_ptrs, {num_layers}, torch::kInt64)
+          .to(cache_device);
+
+  // Launch the kernel.
+  const int numel_per_block = key_caches[0][0].numel();
+  dim3 grid(num_layers);
+  dim3 block(std::min(1024, numel_per_block));
+  const at::cuda::OptionalCUDAGuard device_guard(cache_device);
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  VLLM_DISPATCH_FLOATING_AND_BYTE_TYPES(
+      key_caches[0].scalar_type(), "move_accepted_caches_kernel", ([&] {
+        vllm::move_accepted_caches_kernel<scalar_t><<<grid, block, 0, stream>>>(
+            key_cache_ptrs_tensor.data_ptr<int64_t>(),
+            value_cache_ptrs_tensor.data_ptr<int64_t>(),
+            src_slot_mapping.data_ptr<int64_t>(), 
+            dst_slot_mapping.data_ptr<int64_t>());
+      }));
+
+}
 
 void copy_blocks(std::vector<torch::Tensor>& key_caches,
                  std::vector<torch::Tensor>& value_caches,
@@ -275,8 +345,6 @@ void reshape_and_cache(
 }
 
 void reshape_and_cache_flash(
-    torch::Tensor& key,      // [num_tokens, num_heads, head_size]
-    torch::Tensor& value,    // [num_tokens, num_heads, head_size]
     torch::Tensor& k_cache,  // [num_blocks, block_size, num_heads, head_size]
     torch::Tensor& v_cache,  // [num_blocks, block_size, num_heads, head_size]
     torch::Tensor& slot_mapping,  // [num_tokens]

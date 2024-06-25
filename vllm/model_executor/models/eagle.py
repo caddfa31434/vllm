@@ -748,88 +748,61 @@ class Eagle(nn.Module):
               attn_metadata, sampling_metadata, ss_token, ss_prob, topk_index,
               next_out_hidden):
         batch = len(attn_metadata.block_tables)
+        tree_indices = self.tree_buffer['tree_indices'][idx]
+        repeat_nums = self.tree_buffer["repeat_nums"][idx]
+        
         if idx == 0:
-            next_input_ids = topk_index[:, self.tree_buffer['tree_indices']
-                                        [idx]].view(-1)
-            next_hidden_states = self.repeat_hidden(
-                next_out_hidden.unsqueeze(1),
-                self.tree_buffer["repeat_nums"][idx])
+            next_input_ids = topk_index[:, tree_indices].view(-1)
+            next_hidden_states = self.repeat_hidden(next_out_hidden.unsqueeze(1), repeat_nums)
         else:
-            next_input_ids = topk_index.view(
-                batch, -1)[:, self.tree_buffer['tree_indices'][idx]].view(-1)
-            next_hidden_states = self.repeat_hidden(
-                next_out_hidden.view(batch, -1, next_out_hidden.shape[-1]),
-                self.tree_buffer["repeat_nums"][idx])
-        next_position_ids = positions.unsqueeze(1).expand(
-            positions.shape[0], len(self.tree_buffer["position_ids"][idx])
-        ) + self.tree_buffer["position_ids"][idx].to(
-            positions.device) + idx + 1
+            next_input_ids = topk_index.view(batch, -1)[:, tree_indices].view(-1)
+            next_hidden_states = self.repeat_hidden(next_out_hidden.view(batch, -1, next_out_hidden.shape[-1]), repeat_nums)
+        
+        next_position_ids = (positions.unsqueeze(1).expand(positions.shape[0], len(self.tree_buffer["position_ids"][idx])) + 
+                            self.tree_buffer["position_ids"][idx].to(positions.device) + idx + 1)
 
         self.block_size = 16
-        new_slot_mapping: List[int] = []
-        for i in range(0, len(attn_metadata.block_tables)):
-            for j in range(0, len(self.tree_buffer["tree_indices"][idx])):
-                context_len = j + attn_metadata.decode_metadata.context_lens_tensor[
-                    i] + (1 if idx == 0 else len(
-                        self.tree_buffer["tree_indices"][idx - 1]))
-                block_number = attn_metadata.block_tables[i][context_len //
-                                                             self.block_size]
+        new_slot_mapping = []
+        decode_metadata = attn_metadata.decode_metadata
+        context_lens_tensor = decode_metadata.context_lens_tensor
+
+        for i in range(batch):
+            for j in range(len(tree_indices)):
+                context_len = j + context_lens_tensor[i] + (1 if idx == 0 else len(self.tree_buffer["tree_indices"][idx - 1]))
+                block_number = attn_metadata.block_tables[i][context_len // self.block_size]
                 block_offset = context_len % self.block_size
                 slot = block_number * self.block_size + block_offset
                 new_slot_mapping.append(slot)
 
-        attn_metadata.slot_mapping = torch.tensor(new_slot_mapping,
-                                                  dtype=torch.long,
-                                                  device=input_ids.device)
+        attn_metadata.slot_mapping = torch.tensor(new_slot_mapping, dtype=torch.long, device=input_ids.device)
         attn_metadata.num_decode_tokens = len(next_input_ids)
+        decode_metadata.seq_lens_tensor += len(tree_indices)
+        offset = 1 if idx == 0 else len(self.tree_buffer["tree_indices"][idx - 1])
+        decode_metadata.context_lens_tensor += offset
 
-        attn_metadata.decode_metadata.seq_lens_tensor += len(
-            self.tree_buffer["tree_indices"][idx])
-        offset = (1 if idx == 0 else len(self.tree_buffer["tree_indices"][idx -
-                                                                          1]))
-        attn_metadata.decode_metadata.context_lens_tensor = attn_metadata.decode_metadata.context_lens_tensor + offset
-
-        # Initialize a mask of zeros with the desired shape (4x9)
-        mask = torch.zeros(
-            (len(attn_metadata.decode_metadata.seq_lens_tensor),
-             max(attn_metadata.decode_metadata.seq_lens_tensor)),
-            device=input_ids.device,
-            dtype=torch.int32)
-
-        # Fill the mask based on the lengths in context_lens_tensor
-        for i, length in enumerate(
-                attn_metadata.decode_metadata.seq_lens_tensor):
+        mask = torch.zeros((len(decode_metadata.seq_lens_tensor), max(decode_metadata.seq_lens_tensor)), 
+                        device=input_ids.device, dtype=torch.int32)
+        for i, length in enumerate(decode_metadata.seq_lens_tensor):
             mask[i, -length:] = 1
 
         self.tree_mask = self.tree_buffer['attn_mask'][idx]
 
         attention_mask = self._prepare_decoder_attention_mask(
-            mask, (len(attn_metadata.decode_metadata.seq_lens_tensor),
-                   len(self.tree_buffer["tree_indices"][idx])), hidden_states,
-            max(attn_metadata.decode_metadata.context_lens_tensor))
+            mask, (len(decode_metadata.seq_lens_tensor), len(tree_indices)), hidden_states,
+            max(decode_metadata.context_lens_tensor))
 
-        attn_metadata.decode_metadata.attn_masks = attention_mask
+        decode_metadata.attn_masks = attention_mask
+        decode_metadata.max_decode_seq_len = torch.max(decode_metadata.seq_lens_tensor).item()
 
-        attn_metadata.decode_metadata.max_decode_seq_len = torch.max(
-            attn_metadata.decode_metadata.seq_lens_tensor).item()
+        next_out_hidden = self.model(next_hidden_states, next_input_ids, next_position_ids, kv_caches, attn_metadata)
+        sampling_metadata.selected_token_indices = torch.arange(0, next_out_hidden.shape[0]).to(sampling_metadata.selected_token_indices.device)
 
-        next_out_hidden = self.model(next_hidden_states, next_input_ids,
-                                     next_position_ids, kv_caches,
-                                     attn_metadata)
-        sampling_metadata.selected_token_indices = torch.arange(
-            0, next_out_hidden.shape[0]).to(
-                sampling_metadata.selected_token_indices.device)
-        logits = self.logits_processor(self.lm_head.weight, next_out_hidden,
-                                       sampling_metadata)
-        # logits = torch.matmul(next_out_hidden, self.lm_head.weight.t())
+        logits = torch.matmul(next_out_hidden, self.lm_head.weight.t())
         topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
-        logprobs = torch.log_softmax(logits, dim=-1)
         probs = torch.softmax(logits, dim=-1)
-        ss_token.append(
-            topk_index.view(len(attn_metadata.block_tables), -1,
-                            topk_index.shape[-1]))
-        ss_prob.append(
-            probs.view(len(attn_metadata.block_tables), -1, probs.shape[-1]))
+        
+        ss_token.append(topk_index.view(batch, -1, topk_index.shape[-1]))
+        ss_prob.append(probs.view(batch, -1, probs.shape[-1]))
 
         return topk_index, next_out_hidden
 
@@ -853,8 +826,8 @@ class Eagle(nn.Module):
 
             out_hidden = self.model(hidden_states, input_ids, positions,
                                     kv_caches, attn_metadata)
-            logits = self.compute_logits(out_hidden, sampling_metadata)
-            # logits = torch.matmul(out_hidden, self.lm_head.weight.t())
+            # logits = self.compute_logits(out_hidden, sampling_metadata)
+            logits = torch.matmul(out_hidden, self.lm_head.weight.t())
             # print(f"{logits=}")
             topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
             logprobs = torch.log_softmax(logits, dim=-1)
@@ -955,26 +928,17 @@ class Eagle(nn.Module):
 
     @nvtx_range("eagle.defragment_accepted_kv_blocks")
     def defragment_accepted_kv_blocks(
-            self,
-            seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-            token_ids: torch.Tensor, best_candidate_index: int,
-            kv_caches: List[torch.Tensor]):
-        # slot_mapping: List[int] = []
-        # for seq_group_metadata in seq_group_metadata_list:
-        #     seq_ids = list(seq_group_metadata.seq_data.keys())
-        #     is_prompt = seq_group_metadata.is_prompt
-        #     assert(is_prompt == False)
-        #     for seq_id in seq_ids:
-        #         seq_data = seq_group_metadata.seq_data[seq_id]
-        #         context_len = seq_data.get_num_computed_tokens()
-        #         # seq_len = seq_data.get_len()
-        #         block_table = seq_group_metadata.block_tables[seq_id]
-        #         for i in range(context_len, context_len + sum(sum(inner_list) for inner_list in self.tree_buffer["repeat_nums"])):
-        #             block_number = block_table[i // self.block_size]
-        #             block_offset = i % self.block_size
-        #             slot = block_number * self.block_size + block_offset
-        #             slot_mapping.append(slot)
-        pass
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        hidden_states: Optional[torch.Tensor],
+        kv_caches: List[torch.Tensor],
+        attn_metadata: AttentionMetadata,
+        sampling_metadata: SamplingMetadata,
+    ) -> list[torch.Tensor]:
+            out_hidden = self.model(hidden_states, input_ids, positions,
+                                    kv_caches, attn_metadata)
+            return out_hidden
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [

@@ -5,7 +5,7 @@ import torch.distributed as dist
 import os
 
 # os.environ['VLLM_ATTENTION_BACKEND'] = 'XFORMERS'
-os.environ['CUDA_VISIBLE_DEVICES'] = '2,7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4,5,6,7'
 dist.init_process_group(backend="nccl")
 data = torch.FloatTensor([
     1,

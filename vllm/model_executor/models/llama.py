@@ -709,8 +709,9 @@ class LlamaForCausalLM(nn.Module):
             sampling_metadata.selected_token_indices = torch.arange(
                 0, hidden_states.shape[0]).to(
                     sampling_metadata.selected_token_indices.device)
-            logits = self.logits_processor(self.lm_head.weight, hidden_states,
-                                           sampling_metadata)
+            # logits = self.logits_processor(self.lm_head.weight, hidden_states,
+            #                                sampling_metadata)
+            logits = torch.matmul(hidden_states, self.lm_head.weight.t())
             probs = torch.softmax(logits, dim=-1)
 
             logits = logits.view(
@@ -767,18 +768,27 @@ class LlamaForCausalLM(nn.Module):
     def defragment_accepted_kv_blocks(
             self,
             seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-            token_ids: torch.Tensor, best_candidate_index: torch.Tensor,
+            best_candidate_index: torch.Tensor,
+            accepted_token_ids: torch.Tensor,
             kv_caches: List[torch.Tensor]):
         self.block_size = 16
-        for seq_group_metadata in seq_group_metadata_list:
-            seq_ids = list(seq_group_metadata.seq_data.keys())
-            is_prompt = seq_group_metadata.is_prompt
-            assert (is_prompt == False)
-            slot_mapping: List[int] = []
-            for bs, seq_id in enumerate(seq_ids):
-                seq_data = seq_group_metadata.seq_data[seq_id]
+
+        slot_mapping: List[int] = []
+        src_slot_mapping: List[int] = []
+        dst_slot_mapping: List[int] = []        
+
+        if any(
+                len(seq_group_metadata.seq_data.keys()) != 1
+                for seq_group_metadata in
+                seq_group_metadata_list):
+            raise NotImplementedError(
+                "EagleWorker does not support beam search.")
+
+        accepted_lengths = (accepted_token_ids != -1).sum(dim=1, keepdim=True)
+
+        for batch_size, seq_group_metadata in enumerate(seq_group_metadata_list):
+            for seq_id, seq_data in seq_group_metadata.seq_data.items():
                 context_len = seq_data.get_num_computed_tokens()
-                # seq_len = seq_data.get_len()
                 block_table = seq_group_metadata.block_tables[seq_id]
                 for i in range(
                         context_len, context_len +
@@ -787,41 +797,38 @@ class LlamaForCausalLM(nn.Module):
                     block_offset = i % self.block_size
                     slot = block_number * self.block_size + block_offset
                     slot_mapping.append(slot)
-                for index, element in enumerate(
-                        self.target_tree_buffer["retrieve_indices"][
-                            best_candidate_index[bs]]):
-                    if element != -1 and element != index:
-                        for layer_id in range(len(self.model.layers)):
-                            # print(f"{element=}")
-                            key_cache, value_cache = self.split_kv_cache(
-                                kv_caches[layer_id],
-                                self.model.layers[0].self_attn.num_kv_heads,
-                                self.model.layers[0].self_attn.head_dim)
-                            src_block_number = int(
-                                block_table[slot_mapping[element] //
-                                            self.block_size])
-                            src_block_offset = slot_mapping[
-                                element] % self.block_size
-                            dst_block_number = int(
-                                block_table[slot_mapping[index] //
-                                            self.block_size])
-                            dst_block_offset = slot_mapping[
-                                index] % self.block_size
+                for dst_index, src_index in enumerate(
+                            self.target_tree_buffer["retrieve_indices"][
+                                best_candidate_index[batch_size]]):
+                    if dst_index <= accepted_lengths[batch_size] and dst_index != src_index:
+                        src_slot_mapping.append(slot_mapping[src_index])
+                        dst_slot_mapping.append(slot_mapping[dst_index])
 
-                            key_cache[dst_block_number, :, :,
-                                      dst_block_offset, :] = key_cache[
-                                          src_block_number, :, :,
-                                          src_block_offset, :]
-                            value_cache[dst_block_number, :, :,
-                                        dst_block_offset] = value_cache[
-                                            src_block_number, :, :,
-                                            src_block_offset]
+        for layer_id in range(len(self.model.layers)):
+            for i, src_slot in enumerate(src_slot_mapping):
+                key_cache, value_cache = self.split_kv_cache(
+                    kv_caches[layer_id],
+                    self.model.layers[0].self_attn.num_kv_heads,
+                    self.model.layers[0].self_attn.head_dim)
+                src_block_number = int(
+                    src_slot_mapping[i] //
+                                self.block_size)
+                src_block_offset = src_slot_mapping[
+                    i] % self.block_size
+                dst_block_number = int(
+                    dst_slot_mapping[i] //
+                                self.block_size)
+                dst_block_offset = dst_slot_mapping[
+                    i] % self.block_size
 
-                for layer_id in range(len(self.model.layers)):
-                    key_cache, value_cache = self.split_kv_cache(
-                        kv_caches[layer_id],
-                        self.model.layers[0].self_attn.num_kv_heads,
-                        self.model.layers[0].self_attn.head_dim)
+                key_cache[dst_block_number, :, :,
+                            dst_block_offset, :] = key_cache[
+                                src_block_number, :, :,
+                                src_block_offset, :]
+                value_cache[dst_block_number, :, :,
+                            dst_block_offset] = value_cache[
+                                src_block_number, :, :,
+                                src_block_offset]
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         stacked_params_mapping = [
@@ -882,7 +889,7 @@ class LlamaForCausalLM(nn.Module):
         #                      [0, 0, 0, 0, 1]]
         self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0],
                              [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
-        self.tree_topk = 10
+        self.tree_topk = 4
         self.target_tree_buffer = self.generate_target_tree_buffers(
             self.tree_choices)
         self.tree_mask = self.target_tree_buffer["tree_attn_mask"]

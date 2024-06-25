@@ -791,7 +791,8 @@ class ModelRunner:
         # Currently cuda graph is only supported by the decode phase.
         prefill_meta = attn_metadata.prefill_metadata
         decode_meta = attn_metadata.decode_metadata
-        if prefill_meta is None and decode_meta.use_cuda_graph:
+        if prefill_meta is None and decode_meta.use_cuda_graph and (self.model_config.hf_config.architectures[0]
+                == "EagleModel") and extra_outputs is None:
             graph_batch_size = input_tokens.shape[0]
             model_executable = self.graph_runners[graph_batch_size]
         else:
@@ -816,7 +817,12 @@ class ModelRunner:
         # ones. Would it be better to change multi-modal models to use
         # normal keyword arguments?
         execute_model_kwargs.update(multi_modal_kwargs)
-        hidden_states = model_executable(**execute_model_kwargs)
+        if (self.model_config.hf_config.architectures[0]
+                == "EagleModel") and extra_outputs is None:
+            hidden_states = self.model.defragment_accepted_kv_blocks(**execute_model_kwargs)
+            return hidden_states
+        else:
+            hidden_states = model_executable(**execute_model_kwargs)
 
         if (self.model_config.hf_config.architectures[0]
                 == "EagleModel") or (attn_metadata.num_decode_tokens > 0
@@ -867,11 +873,12 @@ class ModelRunner:
     def defragment_accepted_kv_blocks(
             self,
             seq_group_metadata_list: Optional[List[SequenceGroupMetadata]],
-            token_ids: torch.Tensor, best_candidate_index: torch.Tensor,
+            best_candidate_index: torch.Tensor,
+            accepted_token_ids: torch.Tensor,
             kv_caches: List[torch.Tensor]):
         self.model.defragment_accepted_kv_blocks(seq_group_metadata_list,
-                                                 token_ids,
                                                  best_candidate_index,
+                                                 accepted_token_ids,
                                                  kv_caches)
 
     @torch.inference_mode()

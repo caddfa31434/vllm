@@ -17,7 +17,10 @@ from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.tokenizer import get_cached_tokenizer
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter, deprecate_kwargs
-
+from vllm.spec_decode.util import (create_sequence_group_output,
+                                   get_all_num_logprobs, get_all_seq_ids,
+                                   get_sampled_token_logprobs, nvtx_range,
+                                   split_batch_by_proposal_len)
 logger = init_logger(__name__)
 
 
@@ -163,6 +166,7 @@ class LLM:
                 tokenizer)
 
     @overload  # LEGACY: single (prompt + optional token ids)
+    @nvtx_range("llm.generate")
     def generate(
         self,
         prompts: str,

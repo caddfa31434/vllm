@@ -14,7 +14,7 @@ from vllm.spec_decode.util import (create_sequence_group_output,
                                    get_sampled_token_logprobs, nvtx_range,
                                    split_batch_by_proposal_len)
 from vllm.worker.worker import Worker
-
+from vllm.sequence import SamplerOutput, TensorData, SequenceGroupMetadata
 
 # class EagleWorker(MultiStepWorker):
 class EagleWorker(Worker):
@@ -70,8 +70,7 @@ class EagleWorker(Worker):
                                      sample_num * sample_len)
 
         copied_seq_group_metadata_list = self._shallow_copy_inputs(
-            execute_model_req.seq_group_metadata_list,
-            num_lookahead_slot_mapping_dirty_offset=0)
+            execute_model_req.seq_group_metadata_list)
         copied_execute_model_req = execute_model_req.clone(
             copied_seq_group_metadata_list)
 
@@ -83,6 +82,44 @@ class EagleWorker(Worker):
         model_outputs_topK = model_output[0][0]
         tree_candidates = model_output[0][1]
         return model_outputs_topK, False, tree_candidates
+
+    def defragment_accepted_kv_blocks(self,
+                                      execute_model_req: ExecuteModelRequest,
+                                      best_candidate_index: torch.Tensor,
+                                      accepted_token_ids: torch.Tensor,
+                                      accepted_hidden_states: torch.Tensor):
+        # Shallow copy input data so modifications (such as appending tokens)
+        # do not cause side-effects.
+        copied_seq_group_metadata_list = self._shallow_copy_inputs(
+            execute_model_req.seq_group_metadata_list)
+        copied_execute_model_req = execute_model_req.clone(
+            copied_seq_group_metadata_list)
+
+        copied_execute_model_req.extra_outputs = None
+
+        for batch_size, seq_group_metadata in enumerate(copied_seq_group_metadata_list):
+            seq = seq_group_metadata.seq_data[int(seq_group_metadata.request_id)]
+            token_id = accepted_token_ids[batch_size][0].item()
+            seq.append_token_id(token_id if token_id != -1 else 0, 0)
+            seq.update_num_computed_tokens(1)
+
+        max_accepted_length = (accepted_token_ids != -1).sum(dim=1, keepdim=True).max()
+        for _ in range(max_accepted_length):
+            copied_extra_tensor_data = TensorData()
+            copied_extra_tensor_data["hidden_states"] = accepted_hidden_states["hidden_states"][:,_]
+            copied_execute_model_req.extra_inputs=copied_extra_tensor_data
+
+            model_output = super().execute_model(
+                execute_model_req=copied_execute_model_req)
+            model_output = model_output[0]
+
+            if _ < max_accepted_length - 1:
+                for batch_size, seq_group_metadata in enumerate(copied_seq_group_metadata_list):
+                    seq = seq_group_metadata.seq_data[int(seq_group_metadata.request_id)]
+                    token_id = accepted_token_ids[batch_size][_ + 1].item()
+                    seq.append_token_id(token_id if token_id != -1 else 0, 0)
+                    seq.update_num_computed_tokens(1)
+
 
     @nvtx_range("eagle_worker.get_spec_proposals")
     def get_spec_proposals(
@@ -145,7 +182,6 @@ class EagleWorker(Worker):
     @staticmethod
     def _shallow_copy_inputs(
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        num_lookahead_slot_mapping_dirty_offset: int
     ) -> List[SequenceGroupMetadata]:
         """Copy input data structures to remove side-effects when input data
         structures are shared with other modules.
@@ -172,7 +208,7 @@ class EagleWorker(Worker):
                     seq_id].output_token_ids = old_seq_data.output_token_ids[:]
 
             seq_group_metadata.seq_data = new_seq_data
-            seq_group_metadata.num_lookahead_slot_mapping_dirty_offset = num_lookahead_slot_mapping_dirty_offset
+            # seq_group_metadata.num_lookahead_slot_mapping_dirty_offset = num_lookahead_slot_mapping_dirty_offset
         return new_seq_group_metadata_list
 
     def _assert_enough_kv_space(

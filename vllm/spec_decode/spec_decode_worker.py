@@ -444,11 +444,11 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_speculative_tokens)
 
-        print(f"{best_candidate_index=}")
-        print(f"{accepted_token_ids=}")
+        # print(f"{best_candidate_index=}")
+        # print(f"{accepted_token_ids=}")
 
         self._defragment_accepted_kv_blocks(execute_model_req, proposal_scores,
-                                            proposals, best_candidate_index)
+                                            proposals, best_candidate_index, accepted_token_ids)
 
         # print(f"{proposal_scores.token_ids=}")
         return self._create_output_sampler_list(
@@ -465,13 +465,13 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         proposal_scores: SpeculativeScores,
         proposals: SpeculativeProposals,
         best_candidate_index: torch.Tensor,
+        accepted_token_ids: torch.Tensor,
     ):
+        # pass
         self.scorer_worker.defragment_accepted_kv_blocks(
-            execute_model_req, proposal_scores.token_ids, best_candidate_index)
+            execute_model_req, best_candidate_index, accepted_token_ids)
         self.proposer_worker.defragment_accepted_kv_blocks(
-            execute_model_req, proposals.proposal_token_ids,
-            best_candidate_index)
-        pass
+            execute_model_req, best_candidate_index, accepted_token_ids, proposal_scores.extra_tensor_data)
 
     @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(

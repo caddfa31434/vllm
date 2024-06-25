@@ -33,7 +33,7 @@ class EagleConfig(PretrainedConfig):
         attention_bias=False,
         attention_dropout=0.0,
         max_paths: int = 64,
-        topk: int = 10,
+        topk: int = 4,
         **kwargs,
     ):
         if "architectures" not in kwargs or "LlamaForCausalLM" in kwargs[
@@ -50,7 +50,7 @@ class EagleConfig(PretrainedConfig):
         #                      [0, 2, 0], [0, 2, 1], [1, 0, 0], [0, 0, 0, 0],
         #                      [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 0, 0],
         #                      [0, 0, 0, 0, 1]]
-        # self.tree_choices = [[0], [0, 0], [0, 1], [0, 2], [0, 3]] # # 1st depth we choose top 1 and 2nd depth we choose top 4
+        # # self.tree_choices = [[0], [0, 0], [0, 1], [0, 2], [0, 3]] # # 1st depth we choose top 1 and 2nd depth we choose top 4
         self.tree_choices = [[0], [0, 0], [0, 0, 0], [0, 0, 0, 0],
                              [0, 0, 0, 0, 0]]  # # 5st depth we choose top 1
         self.topk = topk
