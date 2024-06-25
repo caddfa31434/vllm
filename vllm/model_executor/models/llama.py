@@ -52,7 +52,7 @@ from vllm.spec_decode.util import (create_sequence_group_output,
                                    get_all_num_logprobs, get_all_seq_ids,
                                    get_sampled_token_logprobs, nvtx_range,
                                    split_batch_by_proposal_len)
-
+from vllm.distributed.parallel_state import get_tensor_model_parallel_group
 
 class LlamaMLP(nn.Module):
 
@@ -665,6 +665,42 @@ class LlamaForCausalLM(nn.Module):
 
         return combined_attention_mask
 
+    def tensor_model_parallel_gather(self,
+                                    input_: torch.Tensor,
+                                    dst: int = 0,
+                                    dim: int = -1) -> torch.Tensor:
+        """Gather the input tensor across model parallel group.
+
+        NOTE: We assume that the input tensor is on the same device across
+        all the ranks.
+        """
+        world_size = get_tensor_model_parallel_world_size()
+        # Bypass the function if we are using only 1 GPU.
+        if world_size == 1:
+            return input_
+        assert -input_.dim() <= dim < input_.dim(), (
+            f"Invalid dim ({dim}) for input tensor with shape {input_.size()}")
+        if dim < 0:
+            # Convert negative dim to positive.
+            dim += input_.dim()
+        # Allocate output tensor.
+        if get_tensor_model_parallel_rank() == dst:
+            gather_list = [torch.empty_like(input_) for _ in range(world_size)]
+        else:
+            gather_list = [torch.empty_like(input_) for _ in range(world_size)]
+        # Gather.
+        torch.distributed.all_gather(
+        # torch.distributed.gather(input_,
+                                gather_list,
+                                input_,
+                                #  dst=dst,
+                                group=get_tensor_model_parallel_group())
+        if get_tensor_model_parallel_rank() == dst:
+            output_tensor = torch.cat(gather_list, dim=dim)
+        else:
+            output_tensor = torch.cat(gather_list, dim=dim)
+        return output_tensor
+
     @nvtx_range("llama.forward")
     def forward(
         self,
@@ -709,8 +745,10 @@ class LlamaForCausalLM(nn.Module):
             sampling_metadata.selected_token_indices = torch.arange(
                 0, hidden_states.shape[0]).to(
                     sampling_metadata.selected_token_indices.device)
-            logits = self.logits_processor(self.lm_head.weight, hidden_states,
-                                           sampling_metadata)
+            # logits = self.logits_processor(self.lm_head.weight, hidden_states,
+            #                                sampling_metadata)
+            logits = torch.matmul(hidden_states, self.lm_head.weight.t())
+            logits = self.tensor_model_parallel_gather(logits)
             probs = torch.softmax(logits, dim=-1)
 
             logits = logits.view(

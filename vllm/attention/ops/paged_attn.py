@@ -30,6 +30,7 @@ class PagedAttentionMetadata:
 
 
 class PagedAttention:
+    _function_cache = {}
 
     @staticmethod
     def get_supported_head_sizes() -> List[int]:
@@ -128,17 +129,34 @@ class PagedAttention:
         if attn_masks is not None:
             # attn_masks.shape [1, 1, 4, 18]  query[4, 32, 128]
             # st = time.perf_counter()
-            if (query.shape[0] == 26):
-                tree_attention_fwd(output, query, key_cache, value_cache,
-                                   num_kv_heads, scale, block_tables, seq_lens,
-                                   block_size, max_seq_len,
-                                   attn_masks[:, 0, :, :])
-            else:
-                ref_query_cached_kv_attention(output, query,
-                                              num_heads // num_kv_heads,
-                                              key_cache, value_cache,
-                                              block_tables, seq_lens, scale,
-                                              alibi_slopes, attn_masks)
+            # if (query.shape[0] == 26):
+            # print(f"{query.shape}")
+            # if query.shape[0] not in PagedAttention._function_cache:
+            #     PagedAttention._function_cache[query.shape[0]] = tree_attention_fwd(output, query, key_cache, value_cache,
+            #                     num_kv_heads, scale, block_tables, seq_lens,
+            #                     block_size, max_seq_len,
+            #                     attn_masks[:, 0, :, :])
+            # else:
+            #     print(f"{PagedAttention._function_cache[query.shape[0]]}")
+            #     (PagedAttention._function_cache[query.shape[0]])(output, query, key_cache, value_cache,
+            #                     num_kv_heads, scale, block_tables, seq_lens,
+            #                     block_size, max_seq_len,
+            #                     attn_masks[:, 0, :, :])
+            # elif (query.shape[0] == 4):
+            tree_attention_fwd(output, query, key_cache, value_cache,
+                                num_kv_heads, scale, block_tables, seq_lens,
+                                block_size, max_seq_len,
+                                attn_masks[:, 0, :, :])
+            # elif (query.shape[0] == 2):
+            #     tree_attention_fwd3(output, query, key_cache, value_cache,
+            #                         num_kv_heads, scale, block_tables, seq_lens,
+            #                         block_size, max_seq_len,
+            #                         attn_masks[:, 0, :, :])
+                # ref_query_cached_kv_attention(output, query,
+                #                               num_heads // num_kv_heads,
+                #                               key_cache, value_cache,
+                #                               block_tables, seq_lens, scale,
+                #                               alibi_slopes, attn_masks)
             # ref_out = torch.empty_like(output)
             # ref_query_cached_kv_attention(output, query, num_heads // num_kv_heads, key_cache, value_cache, block_tables, seq_lens, scale, alibi_slopes, attn_masks)
             # print(f"{(time.perf_counter() - st)=}")

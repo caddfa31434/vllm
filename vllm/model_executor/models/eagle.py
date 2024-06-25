@@ -30,7 +30,7 @@ from vllm.spec_decode.util import (create_sequence_group_output,
                                    get_all_num_logprobs, get_all_seq_ids,
                                    get_sampled_token_logprobs, nvtx_range,
                                    split_batch_by_proposal_len)
-
+from vllm.distributed.parallel_state import get_tensor_model_parallel_group
 
 class EagleMLP(nn.Module):
 
@@ -819,9 +819,10 @@ class Eagle(nn.Module):
         sampling_metadata.selected_token_indices = torch.arange(
             0, next_out_hidden.shape[0]).to(
                 sampling_metadata.selected_token_indices.device)
-        logits = self.logits_processor(self.lm_head.weight, next_out_hidden,
-                                       sampling_metadata)
-        # logits = torch.matmul(next_out_hidden, self.lm_head.weight.t())
+        # logits = self.logits_processor(self.lm_head.weight, next_out_hidden,
+        #                                sampling_metadata)
+        logits = torch.matmul(next_out_hidden, self.lm_head.weight.t())
+        logits = self.tensor_model_parallel_gather(logits)
         topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
         logprobs = torch.log_softmax(logits, dim=-1)
         probs = torch.softmax(logits, dim=-1)
@@ -832,6 +833,44 @@ class Eagle(nn.Module):
             probs.view(len(attn_metadata.block_tables), -1, probs.shape[-1]))
 
         return topk_index, next_out_hidden
+
+    def tensor_model_parallel_gather(self,
+                                    input_: torch.Tensor,
+                                    dst: int = 0,
+                                    dim: int = -1) -> torch.Tensor:
+        """Gather the input tensor across model parallel group.
+
+        NOTE: We assume that the input tensor is on the same device across
+        all the ranks.
+        """
+        world_size = get_tensor_model_parallel_world_size()
+        # Bypass the function if we are using only 1 GPU.
+        if world_size == 1:
+            return input_
+        assert -input_.dim() <= dim < input_.dim(), (
+            f"Invalid dim ({dim}) for input tensor with shape {input_.size()}")
+        if dim < 0:
+            # Convert negative dim to positive.
+            dim += input_.dim()
+        # Allocate output tensor.
+        if get_tensor_model_parallel_rank() == dst:
+            gather_list = [torch.empty_like(input_) for _ in range(world_size)]
+        else:
+            gather_list = [torch.empty_like(input_) for _ in range(world_size)]
+        # Gather.
+        torch.distributed.all_gather(
+        # torch.distributed.gather(input_,
+                                gather_list,
+                                input_,
+                                #  dst=dst,
+                                group=get_tensor_model_parallel_group())
+
+        if get_tensor_model_parallel_rank() == dst:
+            output_tensor = torch.cat(gather_list, dim=dim)
+        else:
+            output_tensor = torch.cat(gather_list, dim=dim)
+        return output_tensor
+
 
     @nvtx_range("eagle.forward")
     def forward(
@@ -853,8 +892,10 @@ class Eagle(nn.Module):
 
             out_hidden = self.model(hidden_states, input_ids, positions,
                                     kv_caches, attn_metadata)
-            logits = self.compute_logits(out_hidden, sampling_metadata)
-            # logits = torch.matmul(out_hidden, self.lm_head.weight.t())
+            # logits = self.logits_processor(self.lm_head.weight, next_out_hidden,
+            #                                sampling_metadata)
+            logits = torch.matmul(out_hidden, self.lm_head.weight.t())
+            logits = self.tensor_model_parallel_gather(logits)
             # print(f"{logits=}")
             topk_index = torch.topk(logits, self.config.topk, dim=-1).indices
             logprobs = torch.log_softmax(logits, dim=-1)
