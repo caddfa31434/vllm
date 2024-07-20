@@ -701,12 +701,16 @@ class SequenceGroupMetadata:
         # Zero means speculative decoding is disabled for some reasons.
         # TODO: We should maintain this states out of the sequence group.
         self.num_speculative_tokens = None
+        self.spec_input_hidden_states = None
 
         if self._token_chunk_size is None:
             if is_prompt:
                 self._token_chunk_size = list(seq_data.values())[0].get_len()
             else:
                 self._token_chunk_size = 1
+
+    def bind_spec_input_hidden_states(self, spec_input_hidden_states):
+        self.spec_input_hidden_states = spec_input_hidden_states
 
     @property
     def lora_int_id(self) -> int:
@@ -868,6 +872,9 @@ class SamplerOutput:
 
     # Spec decode metrics populated by workers.
     spec_decode_worker_metrics: Optional["SpecDecodeWorkerMetrics"] = None
+
+    # Optional prefill hidden states from the model (only for Eagle speculative decoding at present). 
+    prefill_hidden_states: Optional[torch.Tensor] = None
 
     # Optional last hidden states from the model.
     hidden_states: Optional[torch.Tensor] = None

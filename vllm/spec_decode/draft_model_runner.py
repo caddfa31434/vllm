@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+from sympy import true
 import torch
 
 from vllm import _custom_ops as ops
@@ -58,10 +59,10 @@ class TP1DraftModelRunner(ModelRunner):
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
         return_hidden_states: bool = False,
     ):
-        if return_hidden_states:
-            raise ValueError(
-                "return_hidden_states is not supported for TP1DraftModelRunner."
-            )
+        # if return_hidden_states:
+        #     raise ValueError(
+        #         "return_hidden_states is not supported for TP1DraftModelRunner."
+        #     )
 
         super().__init__(
             model_config=model_config,
@@ -88,7 +89,7 @@ class TP1DraftModelRunner(ModelRunner):
 
         assert attn_metadata.num_prefills == 0
         assert attn_metadata.num_prefill_tokens == 0
-        assert attn_metadata.num_decode_tokens == num_seqs
+        # assert attn_metadata.num_decode_tokens == num_seqs
         assert attn_metadata.slot_mapping.shape == (num_seqs, )
 
         assert len(attn_metadata.seq_lens) == num_seqs
@@ -174,6 +175,7 @@ class TP1DraftModelRunner(ModelRunner):
             query_lens=model_input.query_lens,
             lora_mapping=model_input.lora_mapping,
             lora_requests=model_input.lora_requests,
+            spec_input_hidden_states=last_output.hidden_states,
             multi_modal_kwargs=model_input.multi_modal_kwargs,
             sampling_metadata=model_input.sampling_metadata,
             is_prompt=False,
@@ -316,6 +318,10 @@ class TP1DraftModelRunner(ModelRunner):
         for step in range(num_steps):
             multi_modal_kwargs = model_input.multi_modal_kwargs or {}
 
+            spec_model_kwargs = {
+                "spec_input_hidden_states": model_input.spec_input_hidden_states,
+            } if model_input.spec_input_hidden_states is not None else {}
+        
             # Run model
             hidden_states = model_executable(
                 input_ids=model_input.input_tokens,
@@ -324,6 +330,7 @@ class TP1DraftModelRunner(ModelRunner):
                 attn_metadata=model_input.attn_metadata,
                 intermediate_tensors=intermediate_tensors,
                 **multi_modal_kwargs,
+                **spec_model_kwargs,
             )
 
             # Compute the logits.
@@ -336,6 +343,20 @@ class TP1DraftModelRunner(ModelRunner):
                     logits=logits,
                     sampling_metadata=model_input.sampling_metadata,
                 ))
+
+            if self.return_hidden_states:
+                # we only need to pass hidden states of most recent token
+                assert model_input.sampling_metadata is not None
+                indices = model_input.sampling_metadata.selected_token_indices
+                if model_input.is_prompt:
+                    hidden_states = hidden_states.index_select(
+                        0, indices)
+                elif use_cuda_graph:
+                    hidden_states = hidden_states[:len(indices)]
+                else:
+                    hidden_states = hidden_states
+
+                outputs[-1].hidden_states = hidden_states
 
             # Prepare inputs for the next step
             if step != num_steps - 1:

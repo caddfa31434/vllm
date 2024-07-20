@@ -157,12 +157,19 @@ set(VLLM_EXT_SRC
 if(VLLM_GPU_LANG STREQUAL "CUDA")
   include(FetchContent)
   SET(CUTLASS_ENABLE_HEADERS_ONLY=ON)
+  # 指定本地路径
+  set(CUTLASS_SOURCE_DIR "/mnt/public03/usr/jieni/cutlass")
+
   FetchContent_Declare(
-        cutlass
-        GIT_REPOSITORY https://github.com/nvidia/cutlass.git
-        # CUTLASS 3.5.0
-        GIT_TAG 7d49e6c7e2f8896c47f586706e67e1fb215529dc
+    cutlass
+    SOURCE_DIR ${CUTLASS_SOURCE_DIR}
   )
+  # FetchContent_Declare(
+  #       cutlass
+  #       GIT_REPOSITORY https://github.com/nvidia/cutlass.git
+  #       # CUTLASS 3.5.0
+  #       GIT_TAG 7d49e6c7e2f8896c47f586706e67e1fb215529dc
+  # )
   FetchContent_MakeAvailable(cutlass)
 
   list(APPEND VLLM_EXT_SRC

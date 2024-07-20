@@ -8,7 +8,8 @@ from vllm.logger import init_logger
 from vllm.transformers_utils.configs import (ChatGLMConfig, DbrxConfig,
                                              JAISConfig, MedusaConfig,
                                              MLPSpeculatorConfig, MPTConfig,
-                                             NemotronConfig, RWConfig)
+                                             NemotronConfig, RWConfig,
+                                             EagleConfig)
 
 if VLLM_USE_MODELSCOPE:
     from modelscope import AutoConfig
@@ -27,6 +28,7 @@ _CONFIG_REGISTRY: Dict[str, Type[PretrainedConfig]] = {
     "mlp_speculator": MLPSpeculatorConfig,
     "medusa": MedusaConfig,
     "nemotron": NemotronConfig,
+    "eagle": EagleConfig,
 }
 
 for name, cls in _CONFIG_REGISTRY.items():

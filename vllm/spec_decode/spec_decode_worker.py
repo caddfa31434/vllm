@@ -20,6 +20,7 @@ from vllm.spec_decode.draft_model_runner import TP1DraftModelRunner
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
 from vllm.spec_decode.medusa_worker import MedusaWorker
+from vllm.spec_decode.eagle_worker import EagleWorker
 from vllm.spec_decode.metrics import AsyncMetricsCollector
 from vllm.spec_decode.mlp_speculator_worker import MLPSpeculatorWorker
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
@@ -139,6 +140,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             elif draft_worker_kwargs[
                     "model_config"].hf_config.model_type == "medusa":
                 proposer_worker = MedusaWorker(**draft_worker_kwargs)
+            elif draft_worker_kwargs[
+                    "model_config"].hf_config.model_type == "eagle":
+                if draft_tp == 1:
+                    draft_worker_kwargs[
+                        "model_runner_cls"] = TP1DraftModelRunner
+                else:
+                    allow_zero_draft_token_step = False
+                proposer_worker = EagleWorker(**draft_worker_kwargs)
             else:
                 if draft_tp == 1:
                     draft_worker_kwargs[
@@ -450,8 +459,9 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         not called, meaning that the kv-cache in proposer for requests is not
         updated, so they cannot enable spec decode in the rest decoding.
         """
-        if not skip_proposer:
-            self.proposer_worker.execute_model(execute_model_req)
+        # Move it after the execute_model of scorer_worker for Eagle speculative decoding
+        # if not skip_proposer:
+        #     self.proposer_worker.execute_model(execute_model_req)
 
         sampler_output = self.scorer_worker.execute_model(execute_model_req)
         assert len(sampler_output) == 1
@@ -466,6 +476,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             else:
                 self.previous_hidden_states.update(
                     execute_model_req.seq_group_metadata_list, hidden_states)
+
+        if not skip_proposer:
+            if sampler_output.prefill_hidden_states is not None:
+                for seq_group_metadata in execute_model_req.seq_group_metadata_list:
+                    seq_group_metadata.bind_spec_input_hidden_states(sampler_output.prefill_hidden_states)
+
+            self.proposer_worker.execute_model(execute_model_req)
+
 
         sampler_output_to_return = (self._serialize_sampler_output_no_logprobs(
             execute_model_req=execute_model_req, sampler_output=sampler_output)
@@ -531,6 +549,9 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             raise RuntimeError("Cannot handle cases where distributed draft "
                                "workers generate no tokens")
 
+        # # TODO(chenzhengda): Clean up?
+        # execute_model_req.previous_hidden_states = None
+
         proposal_scores = self.scorer.score_proposals(
             execute_model_req,
             proposals,
@@ -538,7 +559,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_lookahead_slots)
-
+        # print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,

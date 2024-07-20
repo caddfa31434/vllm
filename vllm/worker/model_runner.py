@@ -87,6 +87,7 @@ class ModelInputForGPU(ModelRunnerInputBase):
     """
     input_tokens: Optional[torch.Tensor] = None
     input_positions: Optional[torch.Tensor] = None
+    spec_input_hidden_states: Optional[torch.Tensor] = None
     seq_lens: Optional[List[int]] = None
     query_lens: Optional[List[int]] = None
     lora_mapping: Optional["LoRAMapping"] = None
@@ -103,6 +104,7 @@ class ModelInputForGPU(ModelRunnerInputBase):
         tensor_dict = {
             "input_tokens": self.input_tokens,
             "input_positions": self.input_positions,
+            "spec_input_hidden_states": self.spec_input_hidden_states,
             "lora_requests": self.lora_requests,
             "lora_mapping": self.lora_mapping,
             "multi_modal_kwargs": self.multi_modal_kwargs,
@@ -204,6 +206,9 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             # The current sliding window block.
             curr_sliding_window_blocks: Optional[List[int]] = None,
 
+            # Speculative decoding inputs.
+            spec_input_hidden_states_tensor: torch.Tensor = None,
+
             # LoRA inputs.
             lora_index_mapping: Optional[List[List[int]]] = None,
             lora_prompt_mapping: Optional[List[List[int]]] = None,
@@ -233,6 +238,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             self.query_lens = query_lens or []
             self.context_lens = context_lens or []
             self.curr_sliding_window_blocks = curr_sliding_window_blocks or []
+
+            self.spec_input_hidden_states_tensor = spec_input_hidden_states_tensor
 
             self.lora_index_mapping = lora_index_mapping or []
             self.lora_prompt_mapping = lora_prompt_mapping or []
@@ -274,6 +281,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             self._compute_for_prefix_cache_hit,
             self._compute_for_sliding_window,
             self._compute_lora_input,
+            self._compute_spec_modal_input,
         ]
         # Compute functions for each sequence group.
         # WARNING: The order of the functions matters!
@@ -468,6 +476,12 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         mm_kwargs = self.multi_modal_input_mapper(mm_data)
         inter_data.multi_modal_inputs = mm_kwargs
 
+    def _compute_spec_modal_input(self, inter_data: InterDataForSeqGroup,
+                                 seq_idx: int,
+                                 seq_group_metadata: SequenceGroupMetadata):
+        """If spec-modal data is given, add it to the input."""
+        inter_data.spec_input_hidden_states_tensor = seq_group_metadata.spec_input_hidden_states
+
     def add_seq_group(self, seq_group_metadata: SequenceGroupMetadata):
         """Add a sequence group to the builder."""
         seq_ids = list(seq_group_metadata.seq_data.keys())
@@ -555,6 +569,17 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                                               dtype=torch.long,
                                               device=self.runner.device)
 
+        # Speculative decoding inputs.
+        spec_input_hidden_states_tensor = None
+        if self.inter_data_list[0].spec_input_hidden_states_tensor is not None:
+            spec_in_hs_data = self.inter_data_list[0].spec_input_hidden_states_tensor
+            if spec_in_hs_data.shape[0] != input_tokens_tensor.shape[0]:
+                target_shape = (input_tokens_tensor.shape[0], spec_in_hs_data.shape[1])
+                pad_size = (0, 0, 0, target_shape[0] - spec_in_hs_data.shape[0])
+                spec_input_hidden_states_tensor = torch.nn.functional.pad(spec_in_hs_data, pad_size)
+            else:
+                spec_input_hidden_states_tensor = spec_in_hs_data
+
         # Sequence and query lengths.
         seq_lens.extend([1] * cuda_graph_pad_size)
 
@@ -614,6 +639,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         return self.model_input_cls(
             input_tokens=input_tokens_tensor,
             input_positions=input_positions_tensor,
+            spec_input_hidden_states = spec_input_hidden_states_tensor,
             attn_metadata=attn_metadata,
             seq_lens=seq_lens,
             query_lens=query_lens,
@@ -1036,6 +1062,11 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         seq_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
         block_tables = torch.from_numpy(self.graph_block_tables).cuda()
         intermediate_inputs = None
+        spec_input_hidden_states = None
+        if self.model_config.hf_config.model_type in ["eagle"]:
+            spec_input_hidden_states = torch.zeros(
+                (max_batch_size, self.model_config.get_hidden_size()), dtype=self.model_config.dtype
+            ).cuda()
         if not get_pp_group().is_first_rank:
             intermediate_inputs = self.model.make_empty_intermediate_tensors(
                 batch_size=max_batch_size,
@@ -1193,6 +1224,9 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                         "intermediate_inputs":
                         intermediate_inputs[:batch_size]
                         if intermediate_inputs is not None else None,
+                        "spec_input_hidden_states":
+                        spec_input_hidden_states[:batch_size]
+                        if spec_input_hidden_states is not None else None,
                         "kv_caches":
                         kv_caches[virtual_engine],
                         "attn_metadata":
@@ -1378,9 +1412,15 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
         if self.return_hidden_states:
             # we only need to pass hidden states of most recent token
+            # FIXME(chenzhengda): for medusa/mlp_specuation, but eagle needs all hidden states for model_input.is_prompt
             assert model_input.sampling_metadata is not None
             indices = model_input.sampling_metadata.selected_token_indices
             if model_input.is_prompt:
+                output.prefill_hidden_states = hidden_or_intermediate_states.roll(shifts=1,
+                                                                  dims=0)
+                output.prefill_hidden_states = output.prefill_hidden_states.masked_fill_(
+                    (model_input.input_positions == 0).unsqueeze(-1), 0)
+
                 hidden_states = hidden_or_intermediate_states.index_select(
                     0, indices)
             elif decode_meta.use_cuda_graph:
@@ -1423,6 +1463,7 @@ class CUDAGraphRunner:
         hidden_or_intermediate_states: Optional[Union[IntermediateTensors,
                                                       torch.Tensor]],
         intermediate_inputs: Optional[IntermediateTensors],
+        spec_input_hidden_states: Optional[torch.Tensor],
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
         memory_pool: Optional[Tuple[int, int]],
@@ -1435,27 +1476,49 @@ class CUDAGraphRunner:
         # kernel launches for initial benchmarking (e.g., Triton autotune).
         # Note one iteration is not enough for torch.jit.script
         for _ in range(_NUM_WARMUP_ITERS):
-            self.model(
-                input_ids,
-                positions,
-                kv_caches,
-                attn_metadata,
-                intermediate_inputs,
-                **kwargs,
-            )
+            if spec_input_hidden_states is not None:
+                self.model(
+                    spec_input_hidden_states,
+                    input_ids,
+                    positions,
+                    kv_caches,
+                    attn_metadata,
+                    intermediate_inputs,
+                    **kwargs,
+                )
+            else:
+                self.model(
+                    input_ids,
+                    positions,
+                    kv_caches,
+                    attn_metadata,
+                    intermediate_inputs,
+                    **kwargs,
+                )                
         torch.cuda.synchronize()
 
         # Capture the graph.
         self._graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self._graph, pool=memory_pool, stream=stream):
-            output_hidden_or_intermediate_states = self.model(
-                input_ids,
-                positions,
-                kv_caches,
-                attn_metadata,
-                intermediate_inputs,
-                **kwargs,
-            )
+            if spec_input_hidden_states is not None:
+                output_hidden_or_intermediate_states = self.model(
+                    spec_input_hidden_states,
+                    input_ids,
+                    positions,
+                    kv_caches,
+                    attn_metadata,
+                    intermediate_inputs,
+                    **kwargs,
+                )
+            else:
+                output_hidden_or_intermediate_states = self.model(
+                    input_ids,
+                    positions,
+                    kv_caches,
+                    attn_metadata,
+                    intermediate_inputs,
+                    **kwargs,
+                )
             if hidden_or_intermediate_states is not None:
                 if get_pp_group().is_last_rank:
                     hidden_or_intermediate_states.copy_(
@@ -1496,6 +1559,9 @@ class CUDAGraphRunner:
             }
         if intermediate_inputs is not None:
             self.input_buffers.update(intermediate_inputs.tensors)
+
+        if spec_input_hidden_states is not None:
+            self.input_buffers["spec_input_hidden_states"] = spec_input_hidden_states
         if get_pp_group().is_last_rank:
             self.output_buffers = {
                 "hidden_states": hidden_or_intermediate_states
@@ -1530,6 +1596,8 @@ class CUDAGraphRunner:
         if "seqlen_agnostic_capture_inputs" in self.input_buffers:
             self.model.copy_inputs_before_cuda_graphs(self.input_buffers,
                                                       **kwargs)
+        if "spec_input_hidden_states" in self.input_buffers:
+            self.input_buffers["spec_input_hidden_states"].copy_(kwargs["spec_input_hidden_states"], non_blocking=True)
         if intermediate_tensors is not None:
             for key in intermediate_tensors.tensors:
                 self.input_buffers[key].copy_(intermediate_tensors[key],
