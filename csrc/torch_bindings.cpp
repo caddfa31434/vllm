@@ -258,6 +258,11 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
       "convert_fp8(Tensor! dst_cache, Tensor src_cache, float scale, str "
       "kv_cache_dtype) -> ()");
   cache_ops.impl("convert_fp8", torch::kCUDA, &convert_fp8);
+
+  cache_ops.def(
+      "spec_defragment_kv_cache(Tensor[]! key_caches, Tensor[]! value_caches, Tensor "
+      "src_slot_mapping, Tensor dst_slot_mapping) -> ()");
+  cache_ops.impl("spec_defragment_kv_cache", torch::kCUDA, &spec_defragment_kv_cache);
 }
 
 TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cuda_utils), cuda_utils) {
