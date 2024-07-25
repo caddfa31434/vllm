@@ -113,6 +113,9 @@ class XFormersMetadata(AttentionMetadata, PagedAttentionMetadata):
     # Maximum query length in the batch. None for decoding.
     max_query_len: Optional[int] = None
 
+    # custom attention masks for spec decoding
+    custom_masks: Optional[torch.Tensor] = None
+
     # (batch_size + 1,). The cumulative subquery lengths of the sequences in
     # the batch, used to index into subquery. E.g., if the subquery length
     # is [4, 6], it is [0, 4, 10].
@@ -630,6 +633,7 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.kv_cache_dtype,
                 self.num_kv_heads,
                 self.scale,
+                decode_meta.custom_masks,
                 self.alibi_slopes,
                 k_scale,
                 v_scale,
