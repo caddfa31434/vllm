@@ -12,6 +12,7 @@ from vllm.spec_decode.interfaces import (SpeculativeProposals,
 from vllm.spec_decode.multi_step_worker import MultiStepWorker
 from vllm.spec_decode.top1_proposer import Top1Proposer
 
+
 class EagleWorker(MultiStepWorker):
     """The MultiStepWorker is equivalent to a Worker except that it allows
     multiple forward passes in a single call, assuming the scheduler has
@@ -48,7 +49,8 @@ class EagleWorker(MultiStepWorker):
 
         # FIXME(chenzhengda): Here has some erros with_bonus_tokens
         for seq_group_metadata in expanded_request.seq_group_metadata_list:
-            seq_group_metadata.bind_spec_input_hidden_states(execute_model_req.previous_hidden_states.hidden_states)
+            seq_group_metadata.bind_spec_input_hidden_states(
+                execute_model_req.previous_hidden_states.hidden_states)
 
         # Run model sample_len times.
         model_outputs: List[SamplerOutput] = []
@@ -76,10 +78,11 @@ class EagleWorker(MultiStepWorker):
                 self._append_new_tokens(
                     model_output, expanded_request.seq_group_metadata_list)
                 model_outputs.append(model_output)
-                
+
                 # Update previous_hidden_states for next step
                 for seq_group_metadata in expanded_request.seq_group_metadata_list:
-                    seq_group_metadata.bind_spec_input_hidden_states(model_output.hidden_states)
+                    seq_group_metadata.bind_spec_input_hidden_states(
+                        model_output.hidden_states)
 
         filtered_model_outputs = self._filter_model_output(
             model_outputs, indices_of_seq_with_bonus_tokens)

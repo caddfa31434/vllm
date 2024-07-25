@@ -91,7 +91,7 @@ class BatchExpansionTop1Scorer(SpeculativeScorer):
             num_scoring_tokens=num_scoring_tokens,
             non_spec_indices=non_spec_indices,
             spec_indices=spec_indices,
-            k=execute_model_req.num_lookahead_slots,
+            k=execute_model_req.num_speculative_tokens,
         )
 
         return SpeculativeScores(

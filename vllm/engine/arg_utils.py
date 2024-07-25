@@ -105,6 +105,7 @@ class EngineArgs:
     # Speculative decoding configuration.
     speculative_model: Optional[str] = None
     speculative_draft_tensor_parallel_size: Optional[int] = None
+    num_speculative_candidates: Optional[int] = None
     num_speculative_tokens: Optional[int] = None
     speculative_max_model_len: Optional[int] = None
     speculative_disable_by_batch_size: Optional[int] = None
@@ -525,6 +526,10 @@ class EngineArgs:
             default=EngineArgs.speculative_model,
             help=
             'The name of the draft model to be used in speculative decoding.')
+        parser.add_argument('--num-speculative-candidates',
+                            type=int,
+                            default=EngineArgs.num_speculative_candidates,
+                            help='')
         parser.add_argument(
             '--num-speculative-tokens',
             type=int,
@@ -782,7 +787,9 @@ class EngineArgs:
             speculative_model=self.speculative_model,
             speculative_draft_tensor_parallel_size = \
                 self.speculative_draft_tensor_parallel_size,
+            num_speculative_candidates=self.num_speculative_candidates,
             num_speculative_tokens=self.num_speculative_tokens,
+            num_lookahead_slots=self.num_lookahead_slots,
             speculative_disable_by_batch_size=self.
             speculative_disable_by_batch_size,
             speculative_max_model_len=self.speculative_max_model_len,

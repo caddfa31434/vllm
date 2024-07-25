@@ -348,7 +348,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         self._track_finished_requests(execute_model_req)
         disable_all_speculation = self._should_disable_all_speculation(
             execute_model_req)
-        num_lookahead_slots = execute_model_req.num_lookahead_slots
+        num_speculative_tokens = execute_model_req.num_speculative_tokens
 
         # Broadcast how many lookahead slots are scheduled for this step, and
         # whether all speculation is disabled, to all non-driver workers.
@@ -357,7 +357,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # dynamically, the non-driver workers won't know unless we perform a
         # communication to inform them.
         broadcast_dict = dict(
-            num_lookahead_slots=num_lookahead_slots,
+            num_speculative_tokens=num_speculative_tokens,
             disable_all_speculation=disable_all_speculation,
         )
         broadcast_tensor_dict(broadcast_dict, src=self._driver_rank)
@@ -376,13 +376,13 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         # 3. No request: There are no requests in the batch.
         # In any of these cases, the proposer and scorer workers
         # are called normally.
-        if num_lookahead_slots == 0 or len(
+        if num_speculative_tokens == 0 or len(
                 execute_model_req.seq_group_metadata_list
         ) == 0 or disable_all_speculation:
             return self._run_no_spec(execute_model_req,
                                      skip_proposer=disable_all_speculation)
         return self._run_speculative_decoding_step(execute_model_req,
-                                                   num_lookahead_slots)
+                                                   num_speculative_tokens)
 
     @torch.inference_mode()
     def start_worker_execution_loop(self) -> None:
@@ -480,10 +480,10 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         if not skip_proposer:
             if sampler_output.prefill_hidden_states is not None:
                 for seq_group_metadata in execute_model_req.seq_group_metadata_list:
-                    seq_group_metadata.bind_spec_input_hidden_states(sampler_output.prefill_hidden_states)
+                    seq_group_metadata.bind_spec_input_hidden_states(
+                        sampler_output.prefill_hidden_states)
 
             self.proposer_worker.execute_model(execute_model_req)
-
 
         sampler_output_to_return = (self._serialize_sampler_output_no_logprobs(
             execute_model_req=execute_model_req, sampler_output=sampler_output)
@@ -499,7 +499,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
 
     def _run_non_driver_rank(self) -> bool:
         """Run proposer and verifier model in non-driver workers. This is used
-        for both speculation cases (num_lookahead_slots>0) and non-speculation
+        for both speculation cases (num_speculative_tokens>0) and non-speculation
         cases (e.g. prefill).
 
         Returns True if there are remaining sequences to process.
@@ -509,14 +509,14 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         data = broadcast_tensor_dict(src=self._driver_rank)
         if not data:
             return False
-        num_lookahead_slots = data["num_lookahead_slots"]
+        num_speculative_tokens = data["num_speculative_tokens"]
 
-        # Even if num_lookahead_slots is zero, we want to run the proposer model
+        # Even if num_speculative_tokens is zero, we want to run the proposer model
         # as it may have KV.
         #
         # We run the proposer once per lookahead slot. In the future we should
         # delegate how many times it runs to the proposer.
-        for _ in range(max(num_lookahead_slots, 1)):
+        for _ in range(max(num_speculative_tokens, 1)):
             self.proposer_worker.execute_model()
 
         self.scorer_worker.execute_model()
@@ -525,7 +525,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
     @nvtx_range("spec_decode_worker._run_speculative_decoding_step")
     def _run_speculative_decoding_step(
             self, execute_model_req: ExecuteModelRequest,
-            num_lookahead_slots: int) -> List[SamplerOutput]:
+            num_speculative_tokens: int) -> List[SamplerOutput]:
         """Execute a single step of speculative decoding.
 
         This invokes the proposer worker to get k speculative tokens for each
@@ -534,7 +534,7 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         Returns a list of SamplerOutput, each containing a single token per
         sequence.
         """
-        assert num_lookahead_slots == execute_model_req.num_lookahead_slots
+        assert num_speculative_tokens == execute_model_req.num_speculative_tokens
 
         # Pass last hidden states from target model to proposer
         execute_model_req.previous_hidden_states = self.previous_hidden_states
@@ -558,13 +558,13 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         )
         accepted_token_ids, target_logprobs = self._verify_tokens(
             execute_model_req.seq_group_metadata_list, proposal_scores,
-            proposals, execute_model_req.num_lookahead_slots)
+            proposals, execute_model_req.num_speculative_tokens)
         # print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
             target_logprobs=target_logprobs,
-            k=execute_model_req.num_lookahead_slots)
+            k=execute_model_req.num_speculative_tokens)
 
     @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(

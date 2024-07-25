@@ -6,13 +6,16 @@ import argparse
 import triton
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from vllm.utils import create_kv_caches_with_random
 from vllm.attention.ops.tree_attention import tree_attention_fwd
 from vllm import _custom_ops as ops
 import time
 
 import pdb
+
 FLOAT32_BYTES = torch.finfo(torch.float).bits // 8
 # This will change depending on the compute capability.
 # - 512 as a buffer
@@ -44,15 +47,14 @@ SEEDS = [0]
 #     f"cuda:{i}" for i in range(1 if torch.cuda.device_count() == 1 else 2)
 # ]
 
-CUDA_DEVICES = [
-    "cuda:0"
-]
+CUDA_DEVICES = ["cuda:0"]
 
-QUERY_LEN =  [1, 7, 26] # less than 32
+QUERY_LEN = [1, 7, 26]  # less than 32
+
 
 def create_tree_attention_mask(context_len, q_len, num_kv_head, dtype):
     mask = torch.zeros((num_kv_head, q_len, context_len), dtype=dtype)
-    
+
     min_value = torch.finfo(dtype).min
     mask_idx = torch.randperm(q_len * q_len)
 
@@ -71,6 +73,7 @@ def create_tree_attention_mask(context_len, q_len, num_kv_head, dtype):
 
     return mask
 
+
 def ref_masked_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -87,18 +90,14 @@ def ref_masked_attention(
     return out
 
 
-def ref_query_cached_kv_attention(
-    output: torch.Tensor,
-    query: torch.Tensor,
-    num_queries_per_kv: int,
-    key_cache: torch.Tensor,
-    value_cache: torch.Tensor,
-    block_tables: torch.Tensor,
-    seq_lens: torch.Tensor,
-    scale: float,
-    alibi_slopes: Optional[torch.Tensor],
-    masks: torch.Tensor
-) -> None:
+def ref_query_cached_kv_attention(output: torch.Tensor, query: torch.Tensor,
+                                  num_queries_per_kv: int,
+                                  key_cache: torch.Tensor,
+                                  value_cache: torch.Tensor,
+                                  block_tables: torch.Tensor,
+                                  seq_lens: torch.Tensor, scale: float,
+                                  alibi_slopes: Optional[torch.Tensor],
+                                  masks: torch.Tensor) -> None:
     num_query_heads = query.shape[1]
     num_kv_heads = value_cache.shape[1]
     head_size = value_cache.shape[2]
@@ -168,9 +167,12 @@ def get_input(
 ):
     scale = float(1.0 / (head_size**0.5))
     num_query_heads, num_kv_heads = num_heads
-    query = torch.empty(num_seqs * q_len, num_query_heads, head_size, dtype=dtype)
+    query = torch.empty(num_seqs * q_len,
+                        num_query_heads,
+                        head_size,
+                        dtype=dtype)
     query.uniform_(-scale, scale)
-    
+
     assert num_query_heads % num_kv_heads == 0
     num_queries_per_kv = num_query_heads // num_kv_heads
     alibi_slopes = None
@@ -207,18 +209,19 @@ def get_input(
 
     # Test for common tree_attention_fwd
     custom_masks = []
-    flattened_mask_tensor = torch.zeros(num_seqs, q_len, max_seq_len, dtype=torch.float)
+    flattened_mask_tensor = torch.zeros(num_seqs,
+                                        q_len,
+                                        max_seq_len,
+                                        dtype=torch.float)
     for _ in range(num_seqs):
         # [num_query_heads, q_len, seq_len]
-        custom_mask = create_tree_attention_mask(
-            seq_lens[_], 
-            q_len, 
-            num_query_heads, 
-            dtype=torch.float
-        )
+        custom_mask = create_tree_attention_mask(seq_lens[_],
+                                                 q_len,
+                                                 num_query_heads,
+                                                 dtype=torch.float)
         custom_masks.append(custom_mask)
         flattened_mask_tensor[_, :, :custom_mask.shape[-1]] = custom_mask[0]
-    
+
     return query, key_cache, value_cache, num_kv_heads, scale, block_tables, seq_lens, block_size, max_seq_len, flattened_mask_tensor, num_queries_per_kv, custom_masks
 
 
@@ -254,7 +257,18 @@ def test_tree_attention_v2(
 
     MAX_SEQ_LEN = 1024
     query, key_cache, value_cache, num_kv_heads, scale, block_tables, seq_lens, block_size, max_seq_len, flattened_mask_tensor, num_queries_per_kv, custom_masks = get_input(
-        kv_cache_factory, num_seqs, q_len, num_heads, head_size, use_alibi, block_size, dtype, kv_cache_dtype, seed, device, MAX_SEQ_LEN=MAX_SEQ_LEN,
+        kv_cache_factory,
+        num_seqs,
+        q_len,
+        num_heads,
+        head_size,
+        use_alibi,
+        block_size,
+        dtype,
+        kv_cache_dtype,
+        seed,
+        device,
+        MAX_SEQ_LEN=MAX_SEQ_LEN,
     )
 
     # flattened_mask_tensor   [4, 26, 1024]
@@ -264,18 +278,9 @@ def test_tree_attention_v2(
                        max_seq_len, flattened_mask_tensor)
 
     ref_output = torch.empty_like(query)
-    ref_query_cached_kv_attention(
-        ref_output,
-        query,
-        num_queries_per_kv,
-        key_cache,
-        value_cache,
-        block_tables,
-        seq_lens,
-        scale,
-        alibi_slopes,
-        custom_masks
-    )
+    ref_query_cached_kv_attention(ref_output, query, num_queries_per_kv,
+                                  key_cache, value_cache, block_tables,
+                                  seq_lens, scale, alibi_slopes, custom_masks)
     diff = torch.abs(output - ref_output)
     print(f"diff: {diff.max()}")
     (diff > 0.01).nonzero()

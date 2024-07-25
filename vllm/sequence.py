@@ -873,7 +873,7 @@ class SamplerOutput:
     # Spec decode metrics populated by workers.
     spec_decode_worker_metrics: Optional["SpecDecodeWorkerMetrics"] = None
 
-    # Optional prefill hidden states from the model (only for Eagle speculative decoding at present). 
+    # Optional prefill hidden states from the model (only for Eagle speculative decoding at present).
     prefill_hidden_states: Optional[torch.Tensor] = None
 
     # Optional last hidden states from the model.
@@ -996,6 +996,10 @@ class ExecuteModelRequest:
     blocks_to_copy: List[Tuple[int, int]] = field(default_factory=list)
     # Virtual engine ID for pipeline parallel.
     virtual_engine: int = 0
+    # The number of candidates per sequence for lookahead decoding.
+    num_speculative_candidates: int = 0
+    # The number of tokens per sequence for lookahead decoding.
+    num_speculative_tokens: int = 0
     # The number of slots for lookahead decoding.
     num_lookahead_slots: int = 0
     # The number of requests in the running queue.

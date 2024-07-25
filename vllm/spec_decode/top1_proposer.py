@@ -49,7 +49,9 @@ class Top1Proposer(SpeculativeProposer):
         Sequences which would exceed the max model length are skipped during
         speculation.
         """
-        proposal_len = execute_model_req.num_lookahead_slots
+        proposal_num = execute_model_req.num_speculative_candidates
+        assert (proposal_num == 1)
+        proposal_len = execute_model_req.num_speculative_tokens
         seq_group_metadata_list = execute_model_req.seq_group_metadata_list
 
         # Split speculative- and non-speculative- sequences.
@@ -71,7 +73,7 @@ class Top1Proposer(SpeculativeProposer):
                 hidden_states.prune(nonzero_proposal_len_seqs)
             nonzero_execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=nonzero_proposal_len_seqs,
-                num_lookahead_slots=proposal_len,
+                num_speculative_tokens=proposal_len,
                 previous_hidden_states=hidden_states,
             )
             maybe_sampler_output, transposed = self._worker.sampler_output(

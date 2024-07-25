@@ -319,9 +319,10 @@ class TP1DraftModelRunner(ModelRunner):
             multi_modal_kwargs = model_input.multi_modal_kwargs or {}
 
             spec_model_kwargs = {
-                "spec_input_hidden_states": model_input.spec_input_hidden_states,
+                "spec_input_hidden_states":
+                model_input.spec_input_hidden_states,
             } if model_input.spec_input_hidden_states is not None else {}
-        
+
             # Run model
             hidden_states = model_executable(
                 input_ids=model_input.input_tokens,
@@ -349,8 +350,7 @@ class TP1DraftModelRunner(ModelRunner):
                 assert model_input.sampling_metadata is not None
                 indices = model_input.sampling_metadata.selected_token_indices
                 if model_input.is_prompt:
-                    hidden_states = hidden_states.index_select(
-                        0, indices)
+                    hidden_states = hidden_states.index_select(0, indices)
                 elif use_cuda_graph:
                     hidden_states = hidden_states[:len(indices)]
                 else:

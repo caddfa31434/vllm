@@ -4,10 +4,11 @@ import triton
 import triton.language as tl
 from typing import List, Optional, Tuple
 
+
 def create_tree_attention_mask(context_len, prompt_len, max_context_len,
-                                tree_width, num_kv_head, dtype):
+                               tree_width, num_kv_head, dtype):
     prompt_mask = torch.zeros((num_kv_head, tree_width, prompt_len),
-                                dtype=dtype)
+                              dtype=dtype)
     none_mask_value = torch.arange(context_len - prompt_len).repeat(
         tree_width, 1) - torch.arange(tree_width)[:, None]
     none_mask_value = none_mask_value % tree_width
@@ -15,18 +16,16 @@ def create_tree_attention_mask(context_len, prompt_len, max_context_len,
 
     min_value = torch.finfo(dtype).min
 
-    generate_mask = torch.full(none_mask_value.shape,
-                                min_value,
-                                dtype=dtype)
+    generate_mask = torch.full(none_mask_value.shape, min_value, dtype=dtype)
     generate_mask[none_mask_value] = 0
     generate_mask = generate_mask.unsqueeze(0).repeat(num_kv_head, 1, 1)
 
     pad_mask = torch.zeros(
-        (num_kv_head, tree_width, max_context_len - context_len),
-        dtype=dtype)
+        (num_kv_head, tree_width, max_context_len - context_len), dtype=dtype)
 
     return torch.concat([pad_mask, prompt_mask, generate_mask], dim=2)
     # return torch.concat([prompt_mask, generate_mask, pad_mask], dim=2)
+
 
 def ref_masked_attention(
     query: torch.Tensor,
@@ -43,15 +42,15 @@ def ref_masked_attention(
     out = torch.einsum("hqk,khd->qhd", attn_weights, value)
     return out
 
-def ref_query_cached_kv_attention(output: torch.Tensor,
-                                    query: torch.Tensor,
-                                    num_queries_per_kv: int,
-                                    key_cache: torch.Tensor,
-                                    value_cache: torch.Tensor,
-                                    block_tables: torch.Tensor,
-                                    seq_lens: torch.Tensor, scale: float,
-                                    alibi_slopes: Optional[torch.Tensor],
-                                    masks: torch.Tensor) -> None:
+
+def ref_query_cached_kv_attention(output: torch.Tensor, query: torch.Tensor,
+                                  num_queries_per_kv: int,
+                                  key_cache: torch.Tensor,
+                                  value_cache: torch.Tensor,
+                                  block_tables: torch.Tensor,
+                                  seq_lens: torch.Tensor, scale: float,
+                                  alibi_slopes: Optional[torch.Tensor],
+                                  masks: torch.Tensor) -> None:
     num_query_heads = query.shape[1]
     num_kv_heads = value_cache.shape[1]
     head_size = value_cache.shape[2]
@@ -86,9 +85,7 @@ def ref_query_cached_kv_attention(output: torch.Tensor,
         if num_queries_per_kv > 1:
             # Handle MQA and GQA
             keys = torch.repeat_interleave(keys, num_queries_per_kv, dim=1)
-            values = torch.repeat_interleave(values,
-                                                num_queries_per_kv,
-                                                dim=1)
+            values = torch.repeat_interleave(values, num_queries_per_kv, dim=1)
 
         mask = masks[i, :, :, -seq_len:]
         # mask = masks[i]
@@ -106,7 +103,10 @@ def ref_query_cached_kv_attention(output: torch.Tensor,
         output[i].copy_(out, non_blocking=True)
     output.reshape(-1, num_kv_heads, head_size)
 
-@triton.jit(do_not_specialize=["max_input_len", "stride_am_ql", "stride_am_kl", "stride_btbs", "q_len"])
+
+@triton.jit(do_not_specialize=[
+    "max_input_len", "stride_am_ql", "stride_am_kl", "stride_btbs", "q_len"
+])
 def _fwd_kernel_tree_attn(
     Q,
     K,
@@ -247,6 +247,7 @@ def _fwd_kernel_tree_attn(
     tl.store(out_ptrs, acc, mask=offs_m[:, None] < cur_batch_seq_len)
     return
 
+
 @torch.inference_mode()
 def tree_attention_fwd(
     o,
@@ -293,42 +294,42 @@ def tree_attention_fwd(
     x = k.shape[4]  # k划分的维度
     BLOCK_N = 128
     cached_bin = _fwd_kernel_tree_attn[grid](q,
-                                k,
-                                v,
-                                o,
-                                b_seq_len,
-                                block_tables,
-                                attention_mask,
-                                sm_scale,
-                                block_size,
-                                max_input_len,
-                                q.stride(0),
-                                q.stride(1),
-                                q.stride(2),
-                                k.stride(0),
-                                k.stride(1),
-                                k.stride(2),
-                                k.stride(3),
-                                k.stride(4),
-                                v.stride(0),
-                                v.stride(1),
-                                v.stride(2),
-                                v.stride(3),
-                                o.stride(0),
-                                o.stride(1),
-                                o.stride(2),
-                                block_tables.stride(0),
-                                block_tables.stride(1),
-                                stride_am_bs,
-                                stride_am_ql,
-                                stride_am_kl,
-                                q_len=q_len,
-                                kv_group_num=kv_group_num,
-                                x=x,
-                                MASK_INPUT=MASK_INPUT,
-                                BLOCK_M=BLOCK_M,
-                                BLOCK_DMODEL=head_dim,
-                                BLOCK_N=BLOCK_N,
-                                num_stages=1,
-                                num_warps=8)
+                                             k,
+                                             v,
+                                             o,
+                                             b_seq_len,
+                                             block_tables,
+                                             attention_mask,
+                                             sm_scale,
+                                             block_size,
+                                             max_input_len,
+                                             q.stride(0),
+                                             q.stride(1),
+                                             q.stride(2),
+                                             k.stride(0),
+                                             k.stride(1),
+                                             k.stride(2),
+                                             k.stride(3),
+                                             k.stride(4),
+                                             v.stride(0),
+                                             v.stride(1),
+                                             v.stride(2),
+                                             v.stride(3),
+                                             o.stride(0),
+                                             o.stride(1),
+                                             o.stride(2),
+                                             block_tables.stride(0),
+                                             block_tables.stride(1),
+                                             stride_am_bs,
+                                             stride_am_ql,
+                                             stride_am_kl,
+                                             q_len=q_len,
+                                             kv_group_num=kv_group_num,
+                                             x=x,
+                                             MASK_INPUT=MASK_INPUT,
+                                             BLOCK_M=BLOCK_M,
+                                             BLOCK_DMODEL=head_dim,
+                                             BLOCK_N=BLOCK_N,
+                                             num_stages=1,
+                                             num_warps=8)
     return cached_bin

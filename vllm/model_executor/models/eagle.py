@@ -53,6 +53,7 @@ from vllm.utils import is_hip
 from .interfaces import SupportsLoRA
 from .utils import PPMissingLayer, is_pp_missing_parameter, make_layers
 
+
 class EagleDecoderLayer(nn.Module):
 
     def __init__(
@@ -109,7 +110,7 @@ class EagleDecoderLayer(nn.Module):
         # self.input_layernorm = RMSNorm(config.hidden_size,
         #                                eps=config.rms_norm_eps)
         # self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                # eps=config.rms_norm_eps)
+        # eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -176,7 +177,9 @@ class EagleModel(nn.Module):
             self.embed_tokens = PPMissingLayer()
         # NOTE: Star Code
         if self.config.num_hidden_layers != 1:
-            raise RuntimeError("Not implemented for Eagle draft model with num_hidden_layers > 1!")
+            raise RuntimeError(
+                "Not implemented for Eagle draft model with num_hidden_layers > 1!"
+            )
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
             lambda prefix: EagleDecoderLayer(layer_id=0,
@@ -225,7 +228,7 @@ class EagleModel(nn.Module):
         hidden_states = self.fc(
             torch.cat((hidden_states, spec_input_hidden_states), dim=-1))
 
-        mask = (positions==0).unsqueeze(1).expand_as(hidden_states)
+        mask = (positions == 0).unsqueeze(1).expand_as(hidden_states)
         hidden_states.masked_fill_(mask, 0)
 
         for i in range(self.start_layer, self.end_layer):
@@ -333,8 +336,9 @@ class Eagle(nn.Module, SupportsLoRA):
         attn_metadata: AttentionMetadata,
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        model_output = self.model(spec_input_hidden_states, input_ids, positions, kv_caches,
-                                  attn_metadata, intermediate_tensors)
+        model_output = self.model(spec_input_hidden_states, input_ids,
+                                  positions, kv_caches, attn_metadata,
+                                  intermediate_tensors)
         return model_output
 
     def compute_logits(self, hidden_states: torch.Tensor,
