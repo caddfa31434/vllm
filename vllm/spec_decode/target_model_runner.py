@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, MultiModalConfig, ParallelConfig,
-                         PromptAdapterConfig, SchedulerConfig)
+                         PromptAdapterConfig, SchedulerConfig, SpeculativeConfig)
 from vllm.sequence import SequenceGroupMetadata
 from vllm.worker.model_runner import (ModelInputForGPUWithSamplingMetadata,
                                       ModelRunner)
@@ -32,6 +32,7 @@ class TargetModelRunner(ModelRunner):
                  is_driver_worker: bool = False,
                  prompt_adapter_config: Optional[PromptAdapterConfig] = None,
                  multimodal_config: Optional[MultiModalConfig] = None,
+                 speculative_config: Optional[SpeculativeConfig] = None,
                  return_hidden_states: bool = False):
         # An internal boolean member variable to indicate if token log
         # probabilities are needed or not.
@@ -47,6 +48,7 @@ class TargetModelRunner(ModelRunner):
             kv_cache_dtype=kv_cache_dtype,
             is_driver_worker=is_driver_worker,
             multimodal_config=multimodal_config,
+            speculative_config=speculative_config,
             prompt_adapter_config=prompt_adapter_config,
             return_hidden_states=return_hidden_states,
         )

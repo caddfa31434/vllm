@@ -1052,6 +1052,14 @@ class SpeculativeConfig:
                         f"num_speculative_tokens={n_predict}, but "
                         f"{num_speculative_tokens=} was provided.")
 
+            n_slots = getattr(draft_hf_config, "n_slots", None)
+            if n_slots is not None:
+                num_lookahead_slots = n_slots
+
+            n_candidates = getattr(draft_hf_config, "n_candidates", None)
+            if n_candidates is not None:
+                num_speculative_candidates = n_candidates
+
             draft_model_config.max_model_len = (
                 SpeculativeConfig._maybe_override_draft_max_model_len(
                     speculative_max_model_len,

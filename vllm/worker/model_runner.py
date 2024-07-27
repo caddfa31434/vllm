@@ -26,7 +26,7 @@ except ImportError:
 from vllm.attention import AttentionMetadata, get_attn_backend
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, MultiModalConfig, ParallelConfig,
-                         PromptAdapterConfig, SchedulerConfig)
+                         PromptAdapterConfig, SchedulerConfig, SpeculativeConfig)
 from vllm.distributed import get_pp_group
 from vllm.distributed.parallel_state import graph_capture
 from vllm.inputs import INPUT_REGISTRY
@@ -49,6 +49,7 @@ from vllm.prompt_adapter.worker_manager import (
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (IntermediateTensors, SamplerOutput,
                            SequenceGroupMetadata)
+# from vllm.spec_decode.draft_model_runner import _prepare_decoder_attention_mask
 from vllm.utils import (CudaMemoryProfiler, flatten_2d_lists,
                         get_kv_cache_torch_dtype, is_hip,
                         is_pin_memory_available)
@@ -58,6 +59,7 @@ from vllm.worker.model_runner_base import (
     _add_sampling_metadata_broadcastable_dict,
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict)
+from vllm import _custom_ops as ops
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
@@ -208,6 +210,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
 
             # Speculative decoding inputs.
             spec_input_hidden_states_tensor: torch.Tensor = None,
+            spec_target_tree_positions: torch.Tensor = None,
+            tree_attention_masks: torch.Tensor = None,
 
             # LoRA inputs.
             lora_index_mapping: Optional[List[List[int]]] = None,
@@ -240,6 +244,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             self.curr_sliding_window_blocks = curr_sliding_window_blocks or []
 
             self.spec_input_hidden_states_tensor = spec_input_hidden_states_tensor
+            self.spec_target_tree_positions = spec_target_tree_positions
+            self.spec_target_tree_attention_masks = tree_attention_masks
 
             self.lora_index_mapping = lora_index_mapping or []
             self.lora_prompt_mapping = lora_prompt_mapping or []
@@ -339,24 +345,28 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             # get_num_computed_tokens is incorrect for spec decoding.
             # So, we should have a special logic here.
             # TODO(sang): Fix it.
-            context_len = seq_len - 1
+            # context_len = seq_len - 1
+            context_len = seq_len - seq_group_metadata.token_chunk_size
         seq_len = min(seq_len, context_len + token_chunk_size)
 
         # Compute tokens.
-        if inter_data.is_prompt:
-            tokens = seq_data.get_token_ids()[context_len:seq_len]
-        else:
-            # Optimization. get_token_ids requires the entire copy of
-            # tokens.
-            tokens = [seq_data.get_last_token_id()]
+        # if inter_data.is_prompt:
+        #     tokens = seq_data.get_token_ids()[context_len:seq_len]
+        # else:
+        #     # Optimization. get_token_ids requires the entire copy of
+        #     # tokens.
+        #     tokens = [seq_data.get_last_token_id()]
+        tokens = seq_data.get_token_ids()[context_len:seq_len]
 
         inter_data.seq_lens[seq_idx] = seq_len
         inter_data.orig_seq_lens[seq_idx] = seq_len
         inter_data.context_lens[seq_idx] = context_len
         inter_data.input_tokens[seq_idx] = tokens
         inter_data.input_positions[seq_idx] = list(range(context_len, seq_len))
+        # inter_data.query_lens[
+        #     seq_idx] = seq_len - context_len if inter_data.is_prompt else 1
         inter_data.query_lens[
-            seq_idx] = seq_len - context_len if inter_data.is_prompt else 1
+            seq_idx] = seq_len - context_len
 
     def _compute_for_prefix_cache_hit(
             self, inter_data: InterDataForSeqGroup, seq_idx: int,
@@ -481,6 +491,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                                   seq_group_metadata: SequenceGroupMetadata):
         """If spec-modal data is given, add it to the input."""
         inter_data.spec_input_hidden_states_tensor = seq_group_metadata.spec_input_hidden_states
+        inter_data.spec_target_tree_positions = seq_group_metadata.tree_positions
+        inter_data.spec_target_tree_attention_masks = seq_group_metadata.tree_attention_masks
 
     def add_seq_group(self, seq_group_metadata: SequenceGroupMetadata):
         """Add a sequence group to the builder."""
@@ -569,6 +581,44 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                                               dtype=torch.long,
                                               device=self.runner.device)
 
+        # Sequence and query lengths.
+        seq_lens.extend([1] * cuda_graph_pad_size)
+
+        # Attention metadata.
+        attn_metadata = self.attn_metadata_builder.build(
+            seq_lens, query_lens, cuda_graph_pad_size, batch_size)
+
+        # Speculative decoding  target inputs.
+        # Update spec_target_tree_positions and spec_target_tree_attention_masks for eagle targets
+        if self.inter_data_list[0].spec_target_tree_positions is not None:
+            input_positions_tensor = torch.stack([
+                inter_data.input_positions[0][0] + inter_data.spec_target_tree_positions
+                for inter_data in self.inter_data_list
+            ]).view(-1)
+            combined_tree_attention_masks = torch.stack([
+                inter_data.spec_target_tree_attention_masks
+                for inter_data in self.inter_data_list
+            ])
+            assert input_positions_tensor.is_contiguous()
+            assert combined_tree_attention_masks.is_contiguous()
+            query_len = len(self.inter_data_list[0].spec_target_tree_positions)
+            mask = torch.zeros((len(seq_lens), max_decode_seq_len), 
+                            device=self.runner.device, dtype=torch.int32)
+            for i, length in enumerate(seq_lens):
+                # FIXME(chenzhengda) shall we choose left paddings
+                mask[i, -length:] = 1
+            
+            # TODO(chenzhengda): check attention_mask
+            attention_mask = _prepare_decoder_attention_mask(
+                mask,
+                (len(seq_lens), query_len),
+                input_positions_tensor,
+                max_decode_seq_len - query_len,
+                combined_tree_attention_masks.squeeze(2)
+            )
+
+            attn_metadata.decode_metadata.custom_masks = attention_mask
+
         # Speculative decoding inputs.
         spec_input_hidden_states_tensor = None
         if self.inter_data_list[0].spec_input_hidden_states_tensor is not None:
@@ -583,13 +633,6 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                     spec_in_hs_data, pad_size)
             else:
                 spec_input_hidden_states_tensor = spec_in_hs_data
-
-        # Sequence and query lengths.
-        seq_lens.extend([1] * cuda_graph_pad_size)
-
-        # Attention metadata.
-        attn_metadata = self.attn_metadata_builder.build(
-            seq_lens, query_lens, cuda_graph_pad_size, batch_size)
 
         # LoRA data.
         lora_requests = set()
@@ -676,6 +719,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         is_driver_worker: bool = False,
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
         multimodal_config: Optional[MultiModalConfig] = None,
+        speculative_config: Optional[SpeculativeConfig] = None,
         return_hidden_states: bool = False,
     ):
         self.model_config = model_config
@@ -688,6 +732,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         self.is_driver_worker = is_driver_worker
         self.prompt_adapter_config = prompt_adapter_config
         self.multimodal_config = multimodal_config
+        self.speculative_config = speculative_config
         self.return_hidden_states = return_hidden_states
 
         self.device = self.device_config.device
@@ -1402,17 +1447,49 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if not get_pp_group().is_last_rank:
             return hidden_or_intermediate_states
 
+        if (
+            self.speculative_config
+            and self.speculative_config.draft_model_config.hf_config.model_type
+            == "eagle"
+            and model_input.is_prompt == False
+        ):
+            model_input.sampling_metadata.selected_token_indices = torch.arange(
+                model_input.input_tokens.shape[0],
+                dtype=torch.long,
+                device=self.device,
+            )
+
         logits = self.model.compute_logits(hidden_or_intermediate_states,
                                            model_input.sampling_metadata)
 
         if not self.is_driver_worker:
             return []
 
-        # Sample the next token.
-        output: SamplerOutput = self.model.sample(
-            logits=logits,
-            sampling_metadata=model_input.sampling_metadata,
-        )
+        if (
+            self.speculative_config
+            and self.speculative_config.draft_model_config.hf_config.model_type
+            == "eagle"
+            and model_input.is_prompt == False
+        ):
+            output = SamplerOutput(
+                outputs=None,
+                sampled_token_probs=torch.softmax(logits, dim=-1).view(
+                    len(model_input.attn_metadata.seq_lens),
+                    -1,
+                    self.vocab_size,
+                ),
+                sampled_token_ids=torch.argmax(logits, dim=-1).view(
+                    len(model_input.attn_metadata.seq_lens), -1
+                ),
+                spec_slot_mapping=model_input.attn_metadata.slot_mapping,
+            )
+        else:
+            # Sample the next token.
+            output: SamplerOutput = self.model.sample(
+                logits=logits,
+                sampling_metadata=model_input.sampling_metadata,
+            )
+
 
         if self.return_hidden_states:
             # we only need to pass hidden states of most recent token
@@ -1436,6 +1513,19 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
         return [output]
 
+    def spec_defragment_kv_cache(
+        self,
+        kv_caches: List[torch.Tensor],
+        src_slot_mapping: torch.Tensor,
+        dst_slot_mapping: torch.Tensor,
+    ):
+        x = 16 // kv_caches[0].element_size()
+        num_blocks = kv_caches[0].shape[1]
+        num_kv_heads =self.model.model.layers[0].self_attn.num_kv_heads
+        head_size = self.model.model.layers[0].self_attn.head_dim
+        key_caches = [kv_cache[0].view(num_blocks, num_kv_heads, head_size // x, -1, x) for kv_cache in kv_caches]
+        value_caches = [kv_cache[1].view(num_blocks, num_kv_heads, head_size, -1) for kv_cache in kv_caches]
+        ops.spec_defragment_kv_cache(key_caches, value_caches, src_slot_mapping, dst_slot_mapping)
 
 class CUDAGraphRunner:
 
@@ -1588,6 +1678,7 @@ class CUDAGraphRunner:
         del kv_caches
 
         # Copy the input tensors to the input buffers.
+        print(input_ids.shape)
         self.input_buffers["input_ids"].copy_(input_ids, non_blocking=True)
         self.input_buffers["positions"].copy_(positions, non_blocking=True)
         self.input_buffers["slot_mapping"].copy_(attn_metadata.slot_mapping,
@@ -1636,3 +1727,83 @@ def _get_graph_batch_size(batch_size: int) -> int:
     else:
         return ((batch_size + _BATCH_SIZE_ALIGNMENT - 1) //
                 _BATCH_SIZE_ALIGNMENT * _BATCH_SIZE_ALIGNMENT)
+
+
+def _make_causal_mask(input_ids_shape: torch.Size,
+                        dtype: torch.dtype,
+                        device: torch.device,
+                        past_key_values_length: int = 0):
+    """
+    Make causal mask used for bi-directional self-attention.
+    """
+    bsz, tgt_len = input_ids_shape
+    mask = torch.full((tgt_len, tgt_len),
+                        torch.finfo(dtype).min,
+                        device=device)
+    mask_cond = torch.arange(mask.size(-1), device=device)
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1),
+                        0)
+    mask = mask.to(dtype)
+
+    if past_key_values_length > 0:
+        mask = torch.cat([
+            torch.zeros(tgt_len,
+                        past_key_values_length,
+                        dtype=dtype,
+                        device=device), mask
+        ],
+                            dim=-1)
+    return mask[None, None, :, :].expand(bsz, 1, tgt_len,
+                                            tgt_len + past_key_values_length)
+
+def _expand_mask(mask: torch.Tensor,
+                    dtype: torch.dtype,
+                    tgt_len: Optional[int] = None):
+    """
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    """
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
+
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len,
+                                                    src_len).to(dtype)
+
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool),
+                                        torch.finfo(dtype).min)
+
+
+def _prepare_decoder_attention_mask(attention_mask, input_shape,
+                                    inputs_embeds, past_key_values_length, tree_mask):
+    # create causal mask
+    # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+    combined_attention_mask = None
+    if input_shape[-1] > 1:
+        combined_attention_mask = _make_causal_mask(
+            input_shape,
+            # inputs_embeds.dtype,
+            torch.float32,  # [MODIFIED] force to cast to float32
+            device=inputs_embeds.device,
+            past_key_values_length=past_key_values_length,
+        )
+
+    if attention_mask is not None:
+        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+        expanded_attn_mask = _expand_mask(attention_mask,
+                                                torch.float32,
+                                                tgt_len=input_shape[-1]).to(
+                                                    inputs_embeds.device)
+        combined_attention_mask = (expanded_attn_mask
+                                    if combined_attention_mask is None else
+                                    expanded_attn_mask +
+                                    combined_attention_mask)
+
+    # [MODIFIED] add tree mask
+    if tree_mask is not None:
+        tree_len = tree_mask.size(-1)
+        bs = combined_attention_mask.size(0)
+        # combined_attention_mask[:, :, -tree_len:, -tree_len:][tree_mask.repeat(bs, 1, 1, 1) == 0] = torch.finfo(torch.float32).min
+        combined_attention_mask[:, :, -tree_len:, -tree_len:][tree_mask == 0] = torch.finfo(torch.float32).min
+
+    return combined_attention_mask

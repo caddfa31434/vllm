@@ -309,6 +309,15 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             model_input, self.kv_cache[worker_input.virtual_engine]
             if self.kv_cache is not None else None)
 
+    def spec_defragment_kv_cache(
+        self,
+        execute_model_req: ExecuteModelRequest,
+        src_slot_mapping: Optional[torch.Tensor] = None,
+        dst_slot_mapping: Optional[torch.Tensor] = None,
+    ) :
+        assert(self.kv_cache is not None)
+        self.model_runner.spec_defragment_kv_cache(
+            self.kv_cache[execute_model_req.virtual_engine], src_slot_mapping, dst_slot_mapping)
 
 class WorkerWrapperBase:
     """

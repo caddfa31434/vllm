@@ -25,6 +25,18 @@ class SpeculativeProposals:
     # A flag to mark that there's no available proposals
     no_proposals: bool = False
 
+    # Optional On-device tensor containing the tree token ids.
+    tree_token_ids: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the tree positions
+    tree_positions: Optional[torch.Tensor] = None
+    
+    # Optional On-device tensor containing the tree attention masks
+    tree_attention_masks: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the tree retrieve indices
+    tree_retrieve_indices: Optional[torch.Tensor] = None
+
     def __repr__(self):
         return (f"SpeculativeProposals("
                 f"proposal_token_ids={self.proposal_token_ids}, "
@@ -52,6 +64,10 @@ class SpeculativeScores:
 
     # Optional last hidden states from the scoring model.
     hidden_states: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the spec_slot_mapping for defragment_accepted_kv_blocks
+    flatten_slot_mapping: Optional[torch.Tensor] = None
+    retrieved_slot_mapping: Optional[torch.Tensor] = None
 
     def __repr__(self):
         return (f"SpeculativeScores("

@@ -228,8 +228,9 @@ class EagleModel(nn.Module):
         hidden_states = self.fc(
             torch.cat((hidden_states, spec_input_hidden_states), dim=-1))
 
-        mask = (positions == 0).unsqueeze(1).expand_as(hidden_states)
-        hidden_states.masked_fill_(mask, 0)
+        # mask = (positions == 0).unsqueeze(1).expand_as(hidden_states)
+        # hidden_states.masked_fill_(mask, 0)
+        hidden_states[positions == 0] = 0
 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]

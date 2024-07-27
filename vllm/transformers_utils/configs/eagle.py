@@ -29,13 +29,25 @@ class EagleConfig(PretrainedConfig):
         rope_scaling=None,
         attention_bias=False,
         attention_dropout=0.0,
-        max_paths: int = 64,
-        topk: int = 10,
+        depth: int = 5,
+        topk: int = 1,
+        total_tokens: int = 5,
         **kwargs,
     ):
         if "architectures" not in kwargs or "LlamaForCausalLM" in kwargs[
                 "architectures"]:
             kwargs["architectures"] = ["EagleModel"]
+
+        self.topk = topk
+        self.depth = depth
+        self.n_slots = max(topk * depth, total_tokens)
+
+        self.total_tokens = total_tokens - 1
+        if self.topk == 1:
+            self.n_candidates = 1
+        else:
+            self.n_candidates = self.total_tokens
+        self.n_predict = self.total_tokens
 
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
@@ -66,3 +78,7 @@ class EagleConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+
+    @property
+    def num_lookahead_tokens(self):
+        return self.total_tokens + 1

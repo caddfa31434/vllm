@@ -702,6 +702,9 @@ class SequenceGroupMetadata:
         # TODO: We should maintain this states out of the sequence group.
         self.num_speculative_tokens = None
         self.spec_input_hidden_states = None
+        self.tree_positions: Optional[torch.Tensor] = None
+        self.tree_attention_masks: Optional[torch.Tensor] = None
+        self.tree_retrieve_indices: Optional[torch.Tensor] = None
 
         if self._token_chunk_size is None:
             if is_prompt:
@@ -732,6 +735,17 @@ class SequenceGroupMetadata:
         assert self._token_chunk_size is not None
         return self._token_chunk_size
 
+    @token_chunk_size.setter
+    def token_chunk_size(self, value: int) -> None:
+        self._token_chunk_size = value
+
+    def __repr__(self) -> str:
+        return (f"SequenceGroupMetadata(request_id={self.request_id}, "
+                f"is_prompt={self.is_prompt}, "
+                f"seq_data={self.seq_data}, "
+                f"sampling_params={self.sampling_params}, "
+                f"block_tables={self.block_tables}, "
+                f"token_chunk_size={self.token_chunk_size})")
 
 class SequenceOutput:
     """The model output associated with a sequence.
@@ -878,6 +892,21 @@ class SamplerOutput:
 
     # Optional last hidden states from the model.
     hidden_states: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the tree token ids.
+    tree_token_ids: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the tree positions
+    tree_positions: Optional[torch.Tensor] = None
+    
+    # Optional On-device tensor containing the tree attention masks
+    tree_attention_masks: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the tree retrieve indices
+    tree_retrieve_indices: Optional[torch.Tensor] = None
+
+    # Optional On-device tensor containing the spec_slot_mapping for defragment_accepted_kv_blocks
+    spec_slot_mapping: Optional[torch.Tensor] = None
 
     def __getitem__(self, idx: int):
         return self.outputs[idx]

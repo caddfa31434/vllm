@@ -72,6 +72,7 @@ class Worker(LocalOrDistributedWorkerBase):
             from vllm.utils import init_cached_hf_modules
             init_cached_hf_modules()
         self.multimodal_config = multimodal_config
+        self.speculative_config = speculative_config
 
         # Return hidden states from target model if the draft model is an
         # mlp_speculator
@@ -102,6 +103,7 @@ class Worker(LocalOrDistributedWorkerBase):
             is_driver_worker=is_driver_worker,
             prompt_adapter_config=prompt_adapter_config,
             multimodal_config=multimodal_config,
+            speculative_config=speculative_config,
             **speculative_args,
         )
         # Uninitialized cache engine. Will be initialized by

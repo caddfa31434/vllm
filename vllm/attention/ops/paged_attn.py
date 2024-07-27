@@ -126,24 +126,36 @@ class PagedAttention:
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
         use_v1 = True
         if custom_masks is not None:
-            flattened_mask_tensor = torch.empty(
-                size=(num_seqs, 1, max_seq_len),
-                dtype=torch.float,
-                device=query.device,
-            )
-            tree_attention_fwd(
+            ref_query_cached_kv_attention(
                 output,
                 query,
+                num_heads // num_kv_heads,
                 key_cache,
                 value_cache,
-                num_kv_heads,
-                scale,
                 block_tables,
                 seq_lens,
-                block_size,
-                max_seq_len,
-                # custom_masks[:, 0, :, :])
-                flattened_mask_tensor)
+                scale,
+                alibi_slopes,
+                custom_masks
+            )
+            # flattened_mask_tensor = torch.empty(
+            #     size=(num_seqs, 1, max_seq_len),
+            #     dtype=torch.float,
+            #     device=query.device,
+            # )
+            # tree_attention_fwd(
+            #     output,
+            #     query,
+            #     key_cache,
+            #     value_cache,
+            #     num_kv_heads,
+            #     scale,
+            #     block_tables,
+            #     seq_lens,
+            #     block_size,
+            #     max_seq_len,
+            #     # custom_masks[:, 0, :, :])
+            #     flattened_mask_tensor)
         elif use_v1:
             # Run PagedAttention V1.
             ops.paged_attention_v1(

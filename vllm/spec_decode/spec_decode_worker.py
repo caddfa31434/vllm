@@ -16,6 +16,7 @@ from vllm.sequence import (CompletionSequenceGroupOutput, ExecuteModelRequest,
                            HiddenStates, SamplerOutput, SequenceGroupMetadata,
                            get_all_seq_ids, get_all_seq_ids_and_request_ids)
 from vllm.spec_decode.batch_expansion import BatchExpansionTop1Scorer
+from vllm.spec_decode.eagle_scorer import EagleScorer
 from vllm.spec_decode.draft_model_runner import TP1DraftModelRunner
 from vllm.spec_decode.interfaces import (SpeculativeProposals,
                                          SpeculativeScorer, SpeculativeScores)
@@ -262,10 +263,19 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
         self._metrics.init_gpu_tensors(self.rank)
         self.spec_decode_sampler.init_gpu_tensors(self.rank)
 
-        self.scorer = BatchExpansionTop1Scorer(
-            scorer_worker=self.scorer_worker,
-            device=self.device,
-            vocab_size=self._vocab_size)
+        if (
+            self.proposer_worker.model_runner.model.config.model_type == "eagle"
+            and self.proposer_worker.model_runner.model.config.topk > 1
+        ):
+            self.scorer = EagleScorer(
+                scorer_worker=self.scorer_worker,
+                device=self.device,
+                vocab_size=self._vocab_size)            
+        else:
+            self.scorer = BatchExpansionTop1Scorer(
+                scorer_worker=self.scorer_worker,
+                device=self.device,
+                vocab_size=self._vocab_size)
 
         self._configure_model_sampler_for_spec_decode()
 
@@ -556,15 +566,46 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
             execute_model_req,
             proposals,
         )
-        accepted_token_ids, target_logprobs = self._verify_tokens(
+
+        best_candidate_index, accept_length, accepted_token_ids, target_logprobs = self._verify_tokens_for_tree_spec(
             execute_model_req.seq_group_metadata_list, proposal_scores,
             proposals, execute_model_req.num_speculative_tokens)
-        # print(f"{accepted_token_ids=}")
+
+        self._defragment_accepted_kv_blocks(execute_model_req, proposal_scores,
+                                            proposals, best_candidate_index, accept_length)
+
+        print(f"{accepted_token_ids=}")
         return self._create_output_sampler_list(
             execute_model_req.seq_group_metadata_list,
             accepted_token_ids,
             target_logprobs=target_logprobs,
             k=execute_model_req.num_speculative_tokens)
+
+    @nvtx_range("spec_decode_worker._defragment_accepted_kv_blocks")
+    def _defragment_accepted_kv_blocks(
+        self,
+        execute_model_req: ExecuteModelRequest,
+        proposal_scores: SpeculativeScores,
+        proposals: SpeculativeProposals,
+        best_candidate_index: torch.Tensor,
+        accept_length: torch.Tensor,
+    ):
+        src_slot_mapping = torch.cat(
+            ([
+                proposal_scores.retrieved_slot_mapping[i, best_candidate_index[i], : accept_length[i] + 1]
+                for i in range(len(accept_length))
+            ]),
+        )
+        dst_slot_mapping = torch.cat(
+            ([
+                proposal_scores.flatten_slot_mapping[i, : accept_length[i] + 1]
+                for i in range(len(accept_length))
+            ]),
+        )
+        self.scorer_worker.spec_defragment_kv_cache(execute_model_req, src_slot_mapping, dst_slot_mapping)
+        # self.scorer_worker.defragment_accepted_kv_blocks(
+        #     execute_model_req, best_candidate_index, accepted_token_ids)
+        # execute_model_req.previous_hidden_states = self.previous_hidden_states
 
     @nvtx_range("spec_decode_worker._verify_tokens")
     def _verify_tokens(
@@ -662,6 +703,108 @@ class SpecDecodeWorker(LoraNotSupportedWorkerBase):
                                                        hidden_states)
 
         return accepted_token_ids, logprobs
+
+    def _verify_tokens_for_tree_spec(
+        self,
+        seq_group_metadata_list: List[SequenceGroupMetadata],
+        proposal_scores: SpeculativeScores,
+        proposals: SpeculativeProposals,
+        max_proposal_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Determine which speculative tokens are accepted using the
+        probabilities of each token according to the proposer and scorer models.
+
+        Returns a tuple of Tensors, one for the accepted token ids and one for
+        the logprobs according to the scoring model.
+        """
+        proposal_lens_list = proposals.proposal_lens.tolist()
+
+        # vLLM currently only supports proposal lens equal to zero or the batch
+        # proposal len. This adds some complexity (splitting the batch into spec
+        # and non spec sequences) and should be removed in the future. It can be
+        # done by supporting per-sequence proposal lens.
+        _, spec_indices = split_batch_by_proposal_len(
+            seq_group_metadata_list,
+            proposal_lens_list,
+            select_proposal_len_zero=False)
+        _, non_spec_indices = split_batch_by_proposal_len(
+            seq_group_metadata_list,
+            proposal_lens_list,
+            select_proposal_len_zero=True)
+        original_indices = spec_indices + non_spec_indices
+
+        # Get probabilities of target model, excluding bonus token.
+        proposal_verifier_probs = proposal_scores.probs[spec_indices, :, :-1]
+
+        proposal_verifier_token_ids = proposal_scores.token_ids[
+            spec_indices, :, :-1]
+
+        # Get non-speculative sampled tokens from target model.
+        non_spec_token_ids = proposal_scores.token_ids[non_spec_indices, 0, :]
+
+        # Get bonus tokens from target model.
+        bonus_token_ids = proposal_scores.token_ids[spec_indices, :, -1:]
+
+        # Get probabilities according to proposal method.
+        proposal_probs = proposals.proposal_probs[spec_indices, :, 1:]
+
+        # Get proposed tokens.
+        proposal_token_ids = proposals.proposal_token_ids[spec_indices, :, 1:]
+
+        # Sampler arguments
+        sampler_extra_kwargs = {}
+        if isinstance(self.spec_decode_sampler,
+                      SpecDecodeStochasticBaseSampler):
+
+            # Get sequence group state
+            generators = []
+            for seq_group_metadata in seq_group_metadata_list:
+                if (seq_group_metadata.state is not None
+                        and seq_group_metadata.state.generator is not None):
+                    generators.append(seq_group_metadata.state.generator)
+                else:
+                    generators.append(None)
+
+            sampler_extra_kwargs["generators"] = generators
+    
+        accepted_token_ids, best_candidate_index, accept_length = self.spec_decode_sampler.forward_for_naive_eagle(
+            target_token_ids=proposal_verifier_token_ids,
+            bonus_token_ids=bonus_token_ids,
+            draft_token_ids=proposal_token_ids,
+        )
+
+        # Append output tokens from non-speculative sequences to
+        # the accepted token ids tensor.
+        non_spec_token_ids = non_spec_token_ids.expand(-1, max_proposal_len +
+                                                       1).clone()
+        non_spec_token_ids[:, 1:] = -1
+        accepted_token_ids = torch.cat(
+            [accepted_token_ids, non_spec_token_ids])
+        logprobs = proposal_scores.logprobs
+        # Rearrange so that results are in the order of the original seq group
+        # metadata.
+        accepted_token_ids[original_indices] = accepted_token_ids.clone()
+
+        hidden_states = proposal_scores.hidden_states
+        if hidden_states is not None:
+            retrieve_hidden_state = torch.stack(
+                [
+                    hidden_states[i, proposals.tree_retrieve_indices[i]]
+                    for i in range(hidden_states.size(0))
+                ]
+            )
+            accept_hidden_state = torch.stack(
+                [
+                    retrieve_hidden_state[i, best_candidate_index[i], accept_length[i]]
+                    for i in range(retrieve_hidden_state.size(0))
+                ]
+            )
+            # Store hidden states from target model for subsequent decode step
+            self.previous_hidden_states = HiddenStates(seq_group_metadata_list,
+                                                       accept_hidden_state)
+
+        return best_candidate_index, accept_length, accepted_token_ids, logprobs
+
 
     def _create_output_sampler_list(
         self,

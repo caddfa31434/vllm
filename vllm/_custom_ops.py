@@ -454,10 +454,13 @@ def convert_fp8(output: torch.Tensor,
 
 
 def spec_defragment_kv_cache(key_caches: List[torch.Tensor],
-                value_caches: List[torch.Tensor],
-                src_slot_mapping: torch.Tensor,
-                dst_slot_mapping: torch.Tensor) -> None:
-    torch.ops._C_cache_ops.spec_defragment_kv_cache(key_caches, value_caches, src_slot_mapping, dst_slot_mapping)
+                             value_caches: List[torch.Tensor],
+                             src_slot_mapping: torch.Tensor,
+                             dst_slot_mapping: torch.Tensor) -> None:
+    torch.ops._C_cache_ops.spec_defragment_kv_cache(key_caches, value_caches,
+                                                    src_slot_mapping,
+                                                    dst_slot_mapping)
+
 
 def get_device_attribute(attribute: int, device: int) -> int:
     return torch.ops._C_cuda_utils.get_device_attribute(attribute, device)
