@@ -380,6 +380,7 @@ class Eagle(nn.Module, SupportsLoRA):
             (".gate_up_proj", ".up_proj", 1),
         ]
         params_dict = dict(self.named_parameters())
+        print(f"{params_dict=}")
         # FIXME:(jieni) Hard code for loadding eagle lmhead
         weight_loader = getattr(params_dict["lm_head.weight"], "weight_loader",
                                 default_weight_loader)
@@ -451,6 +452,8 @@ class Eagle(nn.Module, SupportsLoRA):
                 break
             else:
                 # Skip loading extra bias for GPTQ models.
+                if "lm_head" in name:
+                    continue
                 if name.endswith(".bias") and name not in params_dict:
                     # NOTE: Star Code (eagle draft has fc.bias)
                     if name != 'fc.bias':

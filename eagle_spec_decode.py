@@ -1,6 +1,6 @@
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "3,4,5,6"
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 from vllm import LLM, SamplingParams
 
@@ -22,8 +22,8 @@ llm = LLM(
     model=
     "/data/jieni/models/meta-llama/Llama-2-7b-chat-hf",
     # tensor_parallel_size=4,
-    speculative_model=
-    "/mnt/public03/usr/jieni/jieni/workspace/code/inference-toolboxes/hf_experimanets/EAGLE-llama2-chat-7B",
+    # speculative_model=
+    # "/mnt/public03/usr/jieni/jieni/workspace/code/inference-toolboxes/hf_experimanets/EAGLE-llama2-chat-7B",
     # speculative_model="/mnt/nj-larc/dataset/llm_ckpt/ckpt/Qwen2-moe_RedBI_v3.2/state_100/jieni_merged_ckpt",
     # speculative_draft_tensor_parallel_size=1,
     # distributed_executor_backend="ray",

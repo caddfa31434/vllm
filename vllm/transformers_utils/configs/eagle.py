@@ -30,8 +30,8 @@ class EagleConfig(PretrainedConfig):
         attention_bias=False,
         attention_dropout=0.0,
         depth: int = 5,
-        topk: int = 1,
-        total_tokens: int = 5,
+        topk: int = 5,
+        total_tokens: int = 20,
         **kwargs,
     ):
         if "architectures" not in kwargs or "LlamaForCausalLM" in kwargs[
